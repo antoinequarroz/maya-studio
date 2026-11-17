@@ -1,0 +1,29 @@
+{
+  "name": "@maya-studio/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Interface desktop de Maya Studio (Tauri 2 + React), qui parle au moteur uniquement en WebSocket.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "sidecar": "node scripts/prepare-sidecar.mjs",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@suite-media/client": "0.1.0",
+    "@tauri-apps/api": "^2.12.5",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.12.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8"
+  }
+}
