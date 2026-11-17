@@ -234,6 +234,11 @@ export interface InputDevices {
 /** Types de source qui émettent `SourceStarted` / `SourceFailed`. */
 export type CaptureKindName = Exclude<SourceKindName, "color" | "image" | "test_pattern">;
 
+/** État d'une capture (`GetCaptureStatus`). */
+export type CaptureState =
+  | { source_id: Uuid; kind: CaptureKindName; state: "starting" | "running" }
+  | { source_id: Uuid; kind: CaptureKindName; state: "failed"; error: string; retry_in_ms: number };
+
 export interface SourceStartedData {
   source_id: Uuid;
   kind: CaptureKindName;
@@ -309,6 +314,7 @@ export interface StudioRequests {
   RemoveSource: RequestSpec<{ scene: string; source: string }, { scene_id: Uuid; source_id: Uuid }>;
   UpdateSource: RequestSpec<{ scene: string; source: string } & SourcePatch, { scene_id: Uuid; source: Source }>;
   MoveSource: RequestSpec<{ scene: string; source: string; index: number }, { scene_id: Uuid; source_ids: Uuid[] }>;
+  GetCaptureStatus: RequestSpec<void, { sources: CaptureState[] }>;
   // studio.preview
   GetScreenshot: RequestSpec<{ scene?: string; format?: "png" | "jpeg" } | void, { image: string }>;
   // studio.outputs
@@ -377,6 +383,7 @@ export const STUDIO_REQUEST_CAPABILITIES: Readonly<Record<StudioRequestType, str
   RemoveSource: "studio.sources",
   UpdateSource: "studio.sources",
   MoveSource: "studio.sources",
+  GetCaptureStatus: "studio.sources",
   GetScreenshot: "studio.preview",
   StartRecording: "studio.outputs",
   StopRecording: "studio.outputs",

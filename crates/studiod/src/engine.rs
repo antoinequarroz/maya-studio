@@ -113,6 +113,27 @@ impl Drop for StartingSlot<'_> {
     }
 }
 
+/// Retient l'état annoncé par un événement de capture.
+#[cfg_attr(not(feature = "gstreamer"), allow(dead_code))]
+fn record_capture_state(states: &Mutex<HashMap<Uuid, Value>>, event_type: &str, data: &Value) {
+    let state = match event_type {
+        "SourceStarted" => json!({ "state": "running" }),
+        "SourceFailed" => json!({
+            "state": "failed",
+            "error": data["error"],
+            "retry_in_ms": data["retry_in_ms"],
+        }),
+        _ => return,
+    };
+    let Some(id) = data["source_id"]
+        .as_str()
+        .and_then(|s| Uuid::parse_str(s).ok())
+    else {
+        return;
+    };
+    states.lock().unwrap().insert(id, state);
+}
+
 pub struct Engine {
     pub studio: Mutex<Studio>,
     /// Ordre des verrous : `outputs` avant `studio`.
@@ -124,6 +145,9 @@ pub struct Engine {
     media: Arc<MediaStore>,
     #[cfg(feature = "gstreamer")]
     captures: crate::captures::CaptureManager,
+    /// Dernier état connu de chaque capture (`SourceStarted` / `SourceFailed`), pour
+    /// les clients qui se connectent après coup (`GetCaptureStatus`).
+    capture_states: Arc<Mutex<HashMap<Uuid, Value>>>,
     events: broadcast::Sender<ServerMessage>,
     frame: Mutex<u64>,
     pub recordings_dir: std::path::PathBuf,
@@ -138,10 +162,13 @@ impl Engine {
     ) -> Arc<Self> {
         let (events, _) = broadcast::channel(256);
         let media = Arc::new(MediaStore::default());
+        let capture_states: Arc<Mutex<HashMap<Uuid, Value>>> = Arc::default();
         #[cfg(feature = "gstreamer")]
         let captures = {
             let tx = events.clone();
+            let states = Arc::clone(&capture_states);
             let emit: crate::captures::EmitFn = Arc::new(move |event_type: &str, data: Value| {
+                record_capture_state(&states, event_type, &data);
                 let _ = tx.send(ServerMessage::Event {
                     app: "studio".into(),
                     event_type: event_type.to_string(),
@@ -158,6 +185,7 @@ impl Engine {
             media,
             #[cfg(feature = "gstreamer")]
             captures,
+            capture_states,
             events,
             frame: Mutex::new(0),
             recordings_dir,
@@ -199,6 +227,11 @@ impl Engine {
             .capture_sources()
             .map(|s| (s.id, s.kind.clone()))
             .collect();
+        // Les états des captures retirées ne servent plus.
+        self.capture_states
+            .lock()
+            .unwrap()
+            .retain(|id, _| wanted.iter().any(|(w, _)| w == id));
         #[cfg(feature = "gstreamer")]
         self.captures.sync(&wanted);
         #[cfg(not(feature = "gstreamer"))]
@@ -213,6 +246,37 @@ impl Engine {
         return self.captures.running();
         #[cfg(not(feature = "gstreamer"))]
         Vec::new()
+    }
+
+    /// État de chaque capture en cours (requête `GetCaptureStatus`) : `starting` tant
+    /// qu'aucune image ni aucun son n'est arrivé, puis `running` ou `failed`.
+    pub fn capture_status(&self) -> Value {
+        let running: HashSet<Uuid> = self.running_captures().into_iter().collect();
+        let kinds: Vec<(Uuid, Value)> = self
+            .studio
+            .lock()
+            .unwrap()
+            .capture_sources()
+            .filter(|s| running.contains(&s.id))
+            .map(|s| (s.id, serde_json::to_value(&s.kind).unwrap()["kind"].clone()))
+            .collect();
+        let states = self.capture_states.lock().unwrap();
+        let mut seen = HashSet::new();
+        let sources: Vec<Value> = kinds
+            .into_iter()
+            // Une même source peut apparaître dans plusieurs scènes : une seule entrée.
+            .filter(|(id, _)| seen.insert(*id))
+            .map(|(id, kind)| {
+                let mut v = states
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| json!({ "state": "starting" }));
+                v["source_id"] = json!(id);
+                v["kind"] = kind;
+                v
+            })
+            .collect();
+        json!({ "sources": sources })
     }
 
     /// Arrête toutes les captures (fermeture de `studiod`).
@@ -684,6 +748,26 @@ mod tests {
             std::env::temp_dir(),
             OutputConfig::default(),
         )
+    }
+
+    #[test]
+    fn capture_events_are_remembered() {
+        let states = Mutex::new(HashMap::new());
+        let id = Uuid::new_v4();
+        record_capture_state(
+            &states,
+            "SourceFailed",
+            &json!({ "source_id": id, "kind": "camera", "error": "débranchée", "retry_in_ms": 2000 }),
+        );
+        let failed = states.lock().unwrap()[&id].clone();
+        assert_eq!(failed["state"], "failed");
+        assert_eq!(failed["error"], "débranchée");
+        assert_eq!(failed["retry_in_ms"], 2000);
+        record_capture_state(&states, "SourceStarted", &json!({ "source_id": id }));
+        assert_eq!(states.lock().unwrap()[&id], json!({ "state": "running" }));
+        // Les autres événements ne changent rien.
+        record_capture_state(&states, "InputLevels", &json!({ "sources": [] }));
+        assert_eq!(states.lock().unwrap().len(), 1);
     }
 
     #[test]

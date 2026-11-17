@@ -204,6 +204,10 @@ describe("studiod réel", () => {
     expect(failure).toMatchObject({ source_id: source.id, kind: "media_file" });
     expect(failure.retry_in_ms).toBeGreaterThanOrEqual(1000);
     expect(failure.error.length).toBeGreaterThan(0);
+    // Un client arrivé après coup retrouve l'état par GetCaptureStatus.
+    const captures = await studio.call("GetCaptureStatus");
+    const entry = captures.sources.find((c) => c.source_id === source.id);
+    expect(entry).toMatchObject({ kind: "media_file", state: "failed" });
 
     const vol = studio.waitForEvent("studio", "SourceVolumeChanged");
     expect(await studio.call("SetSourceVolume", { scene: "Scène 1", source: source.id, volume: 1.5 })).toMatchObject({
