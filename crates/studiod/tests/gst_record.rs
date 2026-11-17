@@ -1,5 +1,5 @@
 //! Test d'intégration du backend GStreamer : enregistre ~2 s d'images avec
-//! openh264enc et une piste audio silencieuse, puis vérifie le fichier avec ffprobe.
+//! l'encodeur logiciel de test (openh264enc, ou VideoToolbox sur macOS) et une piste audio silencieuse, puis vérifie le fichier avec ffprobe.
 #![cfg(feature = "gstreamer")]
 
 use std::path::Path;
@@ -30,10 +30,10 @@ fn record(path: &Path, format: RecordFormat, fragmented: bool) -> u64 {
         format,
         fragmented,
         bitrate_kbps: 1500,
-        encoder: EncoderChoice::Named("openh264enc".into()),
+        encoder: EncoderChoice::Named(studiod::encoders::test_encoder().into()),
     };
     let mut out: Box<dyn Output> = Box::new(GstOutput::start(&settings).expect("démarrage"));
-    assert_eq!(out.encoder(), "openh264enc");
+    assert_eq!(out.encoder(), studiod::encoders::test_encoder());
     let audio = out.audio_sink().expect("entrée audio");
     let mut frame = vec![0u8; (W * H * 4) as usize];
     let period = Duration::from_secs_f64(1.0 / FPS as f64);
@@ -158,7 +158,7 @@ fn engine_records_through_api() {
         )
         .unwrap();
     let config = OutputConfig {
-        encoder: EncoderChoice::Named("openh264enc".into()),
+        encoder: EncoderChoice::Named(studiod::encoders::test_encoder().into()),
         ..OutputConfig::default()
     };
     let engine = Engine::new(studio, std::env::temp_dir(), config);
@@ -170,12 +170,15 @@ fn engine_records_through_api() {
         serde_json::json!({ "path": path, "bitrate_kbps": 2000 }),
     )
     .expect("StartRecording");
-    assert_eq!(started["encoder"], "openh264enc");
+    assert_eq!(started["encoder"], studiod::encoders::test_encoder());
     assert_eq!(started["format"], "mkv");
     std::thread::sleep(Duration::from_millis(2000));
     let status = studiod::api::handle(&engine, "GetOutputStatus", Value::Null).unwrap();
     assert_eq!(status["record"]["active"], true);
-    assert_eq!(status["record"]["encoder"], "openh264enc");
+    assert_eq!(
+        status["record"]["encoder"],
+        studiod::encoders::test_encoder()
+    );
     assert!(status["record"]["dropped_frames"].is_u64());
     let stopped = studiod::api::handle(&engine, "StopRecording", Value::Null).unwrap();
     assert_eq!(stopped["finalized"], true);

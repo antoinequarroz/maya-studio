@@ -27,7 +27,7 @@ fn srt_without_listener_fails() {
         )
         .unwrap();
     let config = OutputConfig {
-        encoder: EncoderChoice::Named("openh264enc".into()),
+        encoder: EncoderChoice::Named(studiod::encoders::test_encoder().into()),
         ..OutputConfig::default()
     };
     let engine = Engine::new(studio, std::env::temp_dir(), config);
