@@ -51,8 +51,10 @@ impl Transform {
 
 /// Type de source et ses réglages.
 ///
-/// Les captures réelles (caméra, écran, micro, NDI, SRT entrant) arriveront
-/// avec le backend GStreamer ; ce sont des variantes supplémentaires de cet enum.
+/// Les sources de capture (caméra, écran, fenêtre, micro, fichier média, SRT
+/// entrant) sont alimentées par le moteur (`studiod`, via GStreamer) ; le cœur
+/// ne fait que les décrire et dessiner les images qu'on lui fournit
+/// (voir [`crate::compositor::FrameProvider`]).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SourceKind {
@@ -62,7 +64,77 @@ pub enum SourceKind {
     Image { path: String },
     /// Mire animée, utile pour vérifier qu'une sortie est vivante.
     TestPattern,
+    /// Caméra (webcam, carte d'acquisition). Sans `device_id`, la caméra par défaut.
+    Camera {
+        /// Identifiant renvoyé par `GetInputDevices`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_id: Option<String>,
+        /// Taille et cadence souhaitées ; l'image est mise à l'échelle si la
+        /// caméra ne propose pas ce mode.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        width: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        height: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fps: Option<u32>,
+    },
+    /// Capture d'un écran entier. Sans `display_id`, l'écran principal.
+    DisplayCapture {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_id: Option<String>,
+    },
+    /// Capture d'une fenêtre (selon ce que permet la plateforme).
+    WindowCapture {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        window_id: Option<String>,
+    },
+    /// Entrée audio (micro, interface audio). Sans `device_id`, l'entrée par défaut.
+    AudioInput {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_id: Option<String>,
+    },
+    /// Fichier vidéo ou audio (chemin local ou URI), lu en temps réel.
+    MediaFile {
+        path: String,
+        /// Relire depuis le début à la fin du fichier.
+        #[serde(rename = "loop", default)]
+        looping: bool,
+    },
+    /// Flux SRT entrant (`srt://hôte:port`, `?mode=listener` pour attendre l'émetteur).
+    SrtInput { url: String },
 }
+
+impl SourceKind {
+    /// Vrai pour les sources dont les images viennent d'une capture du moteur.
+    pub fn is_live_video(&self) -> bool {
+        matches!(
+            self,
+            SourceKind::Camera { .. }
+                | SourceKind::DisplayCapture { .. }
+                | SourceKind::WindowCapture { .. }
+                | SourceKind::MediaFile { .. }
+                | SourceKind::SrtInput { .. }
+        )
+    }
+
+    /// Vrai pour les sources qui peuvent produire du son.
+    pub fn has_audio(&self) -> bool {
+        matches!(
+            self,
+            SourceKind::AudioInput { .. }
+                | SourceKind::MediaFile { .. }
+                | SourceKind::SrtInput { .. }
+        )
+    }
+
+    /// Vrai pour les sources qui nécessitent un pipeline de capture.
+    pub fn is_capture(&self) -> bool {
+        self.is_live_video() || self.has_audio()
+    }
+}
+
+/// Volume maximal d'une source (gain linéaire, +6 dB).
+pub const MAX_VOLUME: f32 = 2.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Source {
@@ -72,6 +144,12 @@ pub struct Source {
     pub kind: SourceKind,
     pub transform: Transform,
     pub visible: bool,
+    /// Gain audio linéaire, de 0.0 à [`MAX_VOLUME`] (1.0 = inchangé).
+    #[serde(default = "one")]
+    pub volume: f32,
+    /// Son coupé.
+    #[serde(default)]
+    pub muted: bool,
 }
 
 /// Une scène est une pile ordonnée de sources : la première est dessinée en dessous.

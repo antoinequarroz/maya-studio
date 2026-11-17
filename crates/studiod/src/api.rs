@@ -142,6 +142,7 @@ fn studio_err(e: StudioError) -> ApiError {
         StudioError::SceneNameTaken(_) => "scene_name_taken",
         StudioError::SceneOnAir => "scene_on_air",
         StudioError::LastScene => "last_scene",
+        StudioError::InvalidVolume(_) => "invalid_volume",
     };
     (code.to_string(), e.to_string())
 }
