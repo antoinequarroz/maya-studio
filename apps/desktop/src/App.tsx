@@ -1,35 +1,67 @@
 /** Écran principal : mode studio, scènes, sources, propriétés, sorties. */
 
-import { findScene, StudioClient, isSuiteError } from "@suite-media/client";
-import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { lastUrl, rememberUrl, resolveStudioTarget, type StudioTarget } from "./connection";
+import { findScene, StudioClient } from "@suite-media/client";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lastUrl, onEngineEvent, rememberUrl, resolveStudioTarget, type StudioTarget } from "./connection";
+import { connectWatchingFatal } from "./fatal";
 import { ConnectionBanner, StatusBar, Toasts, TopBar } from "./components/Chrome";
 import { Monitors } from "./components/Monitors";
 import { OutputsPanel } from "./components/OutputsPanel";
 import { PropertiesPanel } from "./components/PropertiesPanel";
 import { ScenesPanel } from "./components/ScenesPanel";
 import { SourcesPanel } from "./components/SourcesPanel";
+import { PENDING_SELECTION_MS, type PendingSelection, reconcileSelection } from "./selection";
+import { isInteractiveTarget } from "./shortcuts";
 import { StudioProvider, useStudio } from "./studio/StudioContext";
 
 const CLIENT_APP = { id: "studio-ui", name: "Maya Studio (interface)", version: "0.1.0" };
 
-function isEditable(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
-}
-
 function Workspace() {
-  const { state, run } = useStudio();
+  const { state, run, notify } = useStudio();
   // La scène éditée est la scène d'aperçu : on prépare en aperçu, on coupe à l'antenne.
   const scene = state ? findScene(state, state.preview_scene) : undefined;
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
+  // Source sélectionnée avant d'être dans la scène (réponse à AddSource reçue avant SourceAdded).
+  const pendingSelection = useRef<PendingSelection | null>(null);
+  const [selectionCheck, setSelectionCheck] = useState(0);
+  const sceneSourceIds = useRef<string[]>([]);
+  sceneSourceIds.current = scene?.sources.map((s) => s.id) ?? [];
 
-  // Sélection : on garde la source si elle existe toujours dans la scène, sinon la plus haute.
+  const selectSource = useCallback((id: string | null) => {
+    if (id && !sceneSourceIds.current.includes(id)) {
+      pendingSelection.current = { id, until: Date.now() + PENDING_SELECTION_MS };
+      // Si l'événement n'arrive jamais, on revient à la règle normale à l'échéance.
+      window.setTimeout(() => setSelectionCheck((n) => n + 1), PENDING_SELECTION_MS + 50);
+    } else {
+      pendingSelection.current = null;
+    }
+    setSelectedSource(id);
+  }, []);
+
+  // Sélection : on garde la source si elle existe toujours dans la scène (ou si son ajout
+  // est en route), sinon la plus haute.
   useEffect(() => {
     if (!scene) return;
-    if (selectedSource && scene.sources.some((s) => s.id === selectedSource)) return;
-    setSelectedSource(scene.sources.at(-1)?.id ?? null);
-  }, [scene, selectedSource]);
+    const ids = scene.sources.map((s) => s.id);
+    const next = reconcileSelection(ids, selectedSource, pendingSelection.current, Date.now());
+    const pending = pendingSelection.current;
+    if (pending && (ids.includes(pending.id) || next !== pending.id)) pendingSelection.current = null;
+    if (next !== selectedSource) setSelectedSource(next);
+  }, [scene, selectedSource, selectionCheck]);
+
+  // Moteur lancé par l'app : arrêt inattendu et redémarrage signalés par le shell Tauri.
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    let disposed = false;
+    void onEngineEvent((ev) => notify(ev.kind === "restarted" ? "info" : "error", ev.message)).then((f) => {
+      if (disposed) f();
+      else off = f;
+    });
+    return () => {
+      disposed = true;
+      off?.();
+    };
+  }, [notify]);
 
   const cut = () => void run("Cut");
 
@@ -37,7 +69,7 @@ function Workspace() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (isEditable(e.target) || document.querySelector(".modal-backdrop")) return;
+      if (isInteractiveTarget(e.target) || document.querySelector(".modal-backdrop")) return;
       if (e.key === " " || e.key === "Enter") {
         e.preventDefault();
         cut();
@@ -61,7 +93,7 @@ function Workspace() {
         <Monitors onCut={cut} />
         <div className="docks">
           <ScenesPanel />
-          <SourcesPanel scene={scene} selectedId={selectedSource} onSelect={setSelectedSource} />
+          <SourcesPanel scene={scene} selectedId={selectedSource} onSelect={selectSource} />
           <PropertiesPanel scene={scene} sourceId={selectedSource} />
           <OutputsPanel />
         </div>
@@ -118,14 +150,7 @@ function Connected({ target, onFatal }: { target: StudioTarget; onFatal: (messag
       }),
     [target],
   );
-  useEffect(() => {
-    client.connect().catch((e: unknown) => {
-      if (isSuiteError(e, "auth_failed")) onFatal("Jeton refusé par le studio.");
-      else if (isSuiteError(e, "protocol_mismatch")) onFatal(`Studio incompatible : ${e.message}`);
-      else if (!isSuiteError(e, "not_connected")) onFatal(`Connexion impossible : ${String((e as Error).message ?? e)}`);
-    });
-    return () => client.close();
-  }, [client, onFatal]);
+  useEffect(() => connectWatchingFatal(client, onFatal), [client, onFatal]);
   return (
     <StudioProvider client={client} url={target.url}>
       <Workspace />

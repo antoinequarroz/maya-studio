@@ -30,6 +30,11 @@ struct Args {
     height: u32,
     #[arg(long, default_value_t = 30)]
     fps: u32,
+    /// S'arrêter quand l'entrée standard se ferme. À utiliser quand studiod est lancé
+    /// par une autre app (sidecar) qui garde le côté écriture du tube : si cette app
+    /// meurt, même brutalement, le système ferme le tube et le moteur s'arrête aussi.
+    #[arg(long)]
+    exit_on_stdin_eof: bool,
 }
 
 #[tokio::main]
@@ -59,5 +64,23 @@ async fn main() -> std::io::Result<()> {
 
     let engine = engine::Engine::new(studio, args.recordings);
     engine.spawn_render_loop();
+    if args.exit_on_stdin_eof {
+        watch_parent(std::sync::Arc::clone(&engine));
+    }
     server::serve(engine, &args.listen, args.token).await
+}
+
+/// Attend la fin de l'entrée standard dans un thread dédié, puis arrête les sorties
+/// et quitte le processus.
+fn watch_parent(engine: std::sync::Arc<engine::Engine>) {
+    std::thread::Builder::new()
+        .name("parent-watch".into())
+        .spawn(move || {
+            // On lit et on jette : seul compte le moment où le tube se ferme.
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            tracing::warn!("entrée standard fermée : l'app parente est partie, arrêt du moteur");
+            engine.stop_all_outputs();
+            std::process::exit(0);
+        })
+        .expect("thread de surveillance de l'app parente");
 }

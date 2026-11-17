@@ -54,3 +54,19 @@ export function rememberUrl(url: string): void {
     // stockage indisponible : sans conséquence
   }
 }
+
+/** Événement du shell Tauri sur le moteur qu'il a lancé (sidecar). */
+export interface EngineEvent {
+  kind: "stopped" | "restarted" | "failed";
+  message: string;
+}
+
+/** Nom de l'événement Tauri émis par le shell (voir `src-tauri/src/lib.rs`). */
+export const ENGINE_EVENT = "studio-engine";
+
+/** Suit les arrêts et redémarrages du moteur lancé par l'app. Sans effet hors de Tauri. */
+export async function onEngineEvent(handler: (ev: EngineEvent) => void): Promise<() => void> {
+  if (!isTauri()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<EngineEvent>(ENGINE_EVENT, (e) => handler(e.payload));
+}

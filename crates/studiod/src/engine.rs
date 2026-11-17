@@ -158,6 +158,15 @@ impl Engine {
         json!({ "record": status(OutputKind::Record), "stream": status(OutputKind::Stream) })
     }
 
+    /// Arrête proprement toutes les sorties actives (fichiers finalisés, direct coupé).
+    pub fn stop_all_outputs(&self) {
+        for kind in [OutputKind::Record, OutputKind::Stream] {
+            if self.stop_output(kind).is_ok() {
+                tracing::info!("sortie {kind:?} arrêtée");
+            }
+        }
+    }
+
     pub fn has_active_outputs(&self) -> bool {
         !self.outputs.lock().unwrap().is_empty()
     }

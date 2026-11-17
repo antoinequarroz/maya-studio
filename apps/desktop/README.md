@@ -6,6 +6,16 @@ au front-end par la commande `studio_connection`. Le front-end ne parle au moteu
 **que** par WebSocket, via [`@suite-media/client`](../../packages/suite-client) : le même
 front-end tournera tel quel dans un navigateur face à un studio distant.
 
+Cycle de vie du moteur lancé par l'app :
+
+- il tourne dans son propre groupe de processus (objet job sous Windows) : l'arrêter
+  emporte aussi ses processus enfants ;
+- il reçoit `--exit-on-stdin-eof` : si l'app meurt brutalement (arrêt forcé, plantage,
+  recompilation en `tauri dev`), le tube de son entrée standard se ferme et il s'arrête
+  (sorties finalisées) au lieu de continuer à tourner en arrière-plan ;
+- s'il plante, le shell le relance avec le même port et le même jeton (trois fois par
+  minute au plus) et prévient l'interface par l'événement Tauri `studio-engine`.
+
 ## Écrans
 
 - **Mode studio** : moniteurs Aperçu (vert) et Programme (rouge) côte à côte, bouton **Couper**.
@@ -82,8 +92,9 @@ src/
   studio/StudioContext    client unique, état tenu par les événements, sorties, notifications
   studio/useScreenshot    moniteurs (interrogation JPEG)
   components/             moniteurs, scènes, sources, propriétés, sorties, fenêtres modales
+test/                     tests Vitest (jsdom) : champs, raccourcis, sélection, erreurs fatales
 src-tauri/
-  src/lib.rs              lancement du sidecar, commande studio_connection, arrêt à la fermeture
+  src/lib.rs              lancement et relance du sidecar, commande studio_connection, arrêt à la fermeture
   tauri.conf.json         externalBin = binaries/studiod
 scripts/prepare-sidecar.mjs
 ```

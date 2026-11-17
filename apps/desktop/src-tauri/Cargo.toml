@@ -24,3 +24,5 @@ tauri-plugin-log = "2"
 serde = { version = "1", features = ["derive"] }
 getrandom = "0.3"
 log = "0.4"
+# Déjà utilisé par Tauri (runtime asynchrone) : seulement pour la temporisation du redémarrage.
+tokio = { version = "1", features = ["time"] }

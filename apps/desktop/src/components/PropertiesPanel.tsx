@@ -1,46 +1,11 @@
 /** Propriétés de la source sélectionnée : nom, réglages, position, taille, opacité. */
 
 import type { Canvas, Rgba, Scene, Source, SourcePatch, Transform } from "@suite-media/client";
-import { type InputHTMLAttributes, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useStudio } from "../studio/StudioContext";
 import { hexToRgba, rgbaToHex } from "./color";
+import { DraftInput } from "./DraftInput";
 import { KIND_LABELS } from "./SourcesPanel";
-
-/** Champ texte qui garde un brouillon pendant l'édition et valide sur Entrée ou à la sortie du champ. */
-function DraftInput({
-  value,
-  onCommit,
-  type = "text",
-  ...rest
-}: {
-  value: string;
-  onCommit: (v: string) => void;
-  type?: "text" | "number";
-} & Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type">) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const commit = () => {
-    if (draft !== null && draft !== value) onCommit(draft);
-    setDraft(null);
-  };
-  return (
-    <input
-      {...rest}
-      type={type}
-      value={draft ?? value}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          commit();
-          (e.target as HTMLInputElement).blur();
-        } else if (e.key === "Escape") {
-          setDraft(null);
-          (e.target as HTMLInputElement).blur();
-        }
-      }}
-    />
-  );
-}
 
 /** Limite un envoi continu (curseurs, nuancier) à une requête toutes les `ms`, la dernière valeur gagne. */
 function useThrottled<T>(send: (v: T) => void, ms = 80) {

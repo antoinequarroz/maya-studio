@@ -105,6 +105,13 @@ describe("poignée de main", () => {
   });
 
   it("n'envoie pas events par défaut, mais le transmet s'il est donné", async () => {
+    // Sans `events`, le champ est absent : le serveur garde sa valeur par défaut (true).
+    const byDefault = setup();
+    void byDefault.client.connect();
+    byDefault.sockets[0]!.open();
+    expect(byDefault.sockets[0]!.lastSent().op).toBe("identify");
+    expect("events" in byDefault.sockets[0]!.lastSent()).toBe(false);
+
     const { client, sockets } = setup({ events: false });
     void client.connect();
     sockets[0]!.open();

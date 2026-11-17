@@ -23,6 +23,22 @@ export function buildStreamUrl(server: string, key: string): string {
   return `${base.replace(/\/+$/, "")}/${k}`;
 }
 
+/**
+ * Destination de diffusion affichable, sans secret : l'URL complète porte la clé.
+ * - RTMP(S) : le dernier segment du chemin est la clé (`rtmp://serveur/app/clé`) ;
+ * - SRT : la clé est dans la requête (`streamid`, `passphrase`…), qu'on retire entière ;
+ * - dans tous les cas, identifiant et mot de passe éventuels sont retirés.
+ */
+export function redactStreamTarget(target: string | undefined): string {
+  const m = (target ?? "").trim().match(/^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)([^?#]*)/i);
+  if (!m) return "";
+  const scheme = m[1]!.toLowerCase();
+  const host = m[2]!.replace(/^.*@/, "");
+  const segments = m[3]!.split("/").filter(Boolean);
+  const kept = (scheme === "rtmp" || scheme === "rtmps") && segments.length > 1 ? segments.slice(0, -1) : segments;
+  return `${scheme}://${host}${kept.length ? `/${kept.join("/")}` : ""}`;
+}
+
 /** Durée à droite du titre, ou « Inactif ». */
 function OutputClock({ state }: { state: OutputState | undefined }) {
   if (!state?.active) return <span className="output-stats idle">Inactif</span>;
@@ -123,8 +139,9 @@ export function OutputsPanel() {
             <OutputClock state={outputs?.stream} />
           </div>
           {streaming ? (
-            // L'URL complète contient la clé : on n'affiche que le serveur.
-            <OutputDetails state={outputs?.stream} target={server.trim()} />
+            // Destination réelle du moteur (le direct a pu être lancé par une autre app),
+            // sans la clé de diffusion.
+            <OutputDetails state={outputs?.stream} target={redactStreamTarget(outputs?.stream.target)} />
           ) : (
             <div className="form compact">
               <label className="field">
