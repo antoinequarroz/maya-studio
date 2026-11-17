@@ -2,3 +2,16 @@
 /recordings
 *.mp4
 *.flv
+
+# Node / front-end
+node_modules/
+dist/
+*.tsbuildinfo
+.vite/
+capture-programme.png
+
+# Tauri
+apps/desktop/src-tauri/target/
+apps/desktop/src-tauri/gen/schemas/
+# Binaires sidecar (studiod copié par scripts/prepare-sidecar.mjs)
+apps/desktop/src-tauri/binaries/
