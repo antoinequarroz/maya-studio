@@ -102,7 +102,7 @@ async fn main() -> std::io::Result<()> {
             Ok(())
         }
         _ = parent_gone => {
-            tracing::warn!("entrée standard fermée : l'app parente est partie, arrêt du moteur");
+            tracing::info!("entrée standard fermée (app parente fermée ou partie) : arrêt du moteur");
             Ok(())
         }
     };

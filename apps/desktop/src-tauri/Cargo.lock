@@ -1912,6 +1912,7 @@ dependencies = [
  "tauri-plugin-log",
  "tauri-plugin-shell",
  "tokio",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]

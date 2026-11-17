@@ -30,3 +30,7 @@ tokio = { version = "1", features = ["time"] }
 # Arrêt propre du moteur (SIGTERM) à la fermeture de l'app ; déjà présent via Tauri.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Arrêt du moteur par handle de processus (attente, arrêt forcé) ; déjà présent via le plugin shell.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = ["Win32_Foundation", "Win32_System_Threading"] }

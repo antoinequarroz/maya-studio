@@ -13,9 +13,10 @@ Cycle de vie du moteur lancé par l'app :
 - il reçoit `--exit-on-stdin-eof` : si l'app meurt brutalement (arrêt forcé, plantage,
   recompilation en `tauri dev`), le tube de son entrée standard se ferme et il s'arrête
   (sorties finalisées) au lieu de continuer à tourner en arrière-plan ;
-- à la fermeture de l'app, il reçoit d'abord SIGTERM (macOS, Linux) et a jusqu'à 10 s pour
-  finaliser les enregistrements et arrêter les captures, avant l'arrêt forcé ; sous
-  Windows, l'arrêt reste forcé (un enregistrement MKV ou MP4 fragmenté reste lisible) ;
+- à la fermeture de l'app, le shell ferme son entrée standard (et envoie aussi SIGTERM
+  sous macOS et Linux) : le moteur a jusqu'à 10 s pour finaliser les enregistrements et
+  arrêter les captures, sur toutes les plateformes Windows compris, avant l'arrêt forcé
+  (groupe de processus sous macOS et Linux, processus du moteur sous Windows) ;
 - s'il plante, le shell le relance avec le même port et le même jeton (trois fois par
   minute au plus) et prévient l'interface par l'événement Tauri `studio-engine`.
 
@@ -90,7 +91,6 @@ npm run tauri dev
   `codesign -d --entitlements - "Maya Studio.app/Contents/MacOS/studiod"`. Sans eux, les
   sources caméra et micro passent *en échec* dans l'app distribuée alors que
   `npm run tauri dev` fonctionne.
-
 
 ### Windows
 

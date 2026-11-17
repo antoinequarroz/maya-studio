@@ -3,8 +3,8 @@
 //! Le shell ne fait que trois choses :
 //! 1. lancer le moteur `studiod` en sidecar sur 127.0.0.1, port libre et jeton aléatoires ;
 //! 2. donner l'URL et le jeton au front-end par la commande `studio_connection` ;
-//! 3. arrêter le moteur à la fermeture de l'app (proprement d'abord : SIGTERM, sorties
-//!    finalisées), le relancer s'il plante (en prévenant
+//! 3. arrêter le moteur à la fermeture de l'app (proprement d'abord : entrée standard
+//!    fermée, plus SIGTERM sous Unix ; sorties finalisées), le relancer s'il plante (en prévenant
 //!    le front-end par l'événement `studio-engine`), et faire en sorte qu'il s'arrête
 //!    aussi si l'app meurt brutalement (`--exit-on-stdin-eof`).
 //!
@@ -302,16 +302,76 @@ fn stop_studiod(app: &tauri::AppHandle) {
         state.sidecar.shutting_down.store(true, Ordering::SeqCst);
         if let Some(child) = state.sidecar.child.lock().unwrap().take() {
             log::info!("arrêt du moteur studiod");
-            // D'abord l'arrêt propre (sorties finalisées, captures arrêtées), puis l'arrêt
-            // forcé du groupe de processus, qui ne fait plus rien si le moteur est parti.
-            if graceful_stop(child.pid(), GRACEFUL_STOP) {
+            let process = EngineProcess::open(child.pid());
+            // Lâcher `CommandChild` ferme le côté écriture de l'entrée standard du moteur
+            // (le plugin ne le tue pas : `kill_on_drop` est faux) : avec
+            // `--exit-on-stdin-eof`, c'est l'arrêt propre (sorties finalisées, captures
+            // arrêtées) sur toutes les plateformes, Windows compris.
+            let stopped = process.stop(move || drop(child), GRACEFUL_STOP);
+            if stopped {
                 log::info!("moteur studiod arrêté proprement");
             } else {
                 log::warn!("moteur studiod toujours là après {GRACEFUL_STOP:?} : arrêt forcé");
             }
-            if let Err(e) = child.kill() {
+        }
+    }
+}
+
+/// Le processus `studiod` lancé par l'app, suivi par son pid (POSIX) ou par un handle
+/// ouvert avant de lâcher `CommandChild` (Windows), qui empêche la réutilisation du pid.
+struct EngineProcess {
+    pid: u32,
+    #[cfg(windows)]
+    handle: Option<windows::ProcessHandle>,
+}
+
+impl EngineProcess {
+    fn open(pid: u32) -> Self {
+        Self {
+            pid,
+            #[cfg(windows)]
+            handle: windows::ProcessHandle::open(pid),
+        }
+    }
+
+    /// Arrêt propre : ferme l'entrée standard (`close_stdin`) et, sous Unix, envoie aussi
+    /// SIGTERM ; attend la fin du moteur au plus `timeout`, puis force l'arrêt. Renvoie
+    /// vrai si le moteur est parti de lui-même.
+    fn stop(self, close_stdin: impl FnOnce(), timeout: Duration) -> bool {
+        close_stdin();
+        #[cfg(unix)]
+        {
+            let stopped = graceful_stop(self.pid, timeout);
+            // Toujours, comme `CommandChild::kill` : le groupe emporte les processus
+            // enfants restants (encodeurs externes). Le pgid ne peut pas être réutilisé
+            // tant que le groupe a des membres ; ESRCH s'il n'en a plus.
+            // SAFETY : signal envoyé au groupe de processus lancé par l'app.
+            if unsafe { libc::killpg(self.pid as libc::pid_t, libc::SIGKILL) } != 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() != Some(libc::ESRCH) {
+                    log::warn!("impossible d'arrêter studiod : {err}");
+                }
+            }
+            stopped
+        }
+        #[cfg(windows)]
+        {
+            let Some(handle) = self.handle else {
+                log::warn!("studiod (pid {}) introuvable : déjà arrêté ?", self.pid);
+                return true;
+            };
+            if handle.wait(timeout) {
+                return true;
+            }
+            if let Err(e) = handle.terminate() {
                 log::warn!("impossible d'arrêter studiod : {e}");
             }
+            false
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = timeout;
+            false
         }
     }
 }
@@ -339,11 +399,49 @@ fn graceful_stop(pid: u32, timeout: Duration) -> bool {
     false
 }
 
-/// Sous Windows, pas de signal d'arrêt propre vers un processus console sans fenêtre :
-/// l'arrêt reste forcé (objet job). `--exit-on-stdin-eof` couvre la mort brutale de l'app.
-#[cfg(not(unix))]
-fn graceful_stop(_pid: u32, _timeout: Duration) -> bool {
-    false
+/// Attente et arrêt forcé du moteur sous Windows, par handle de processus.
+#[cfg(windows)]
+mod windows {
+    use std::time::Duration;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    };
+
+    pub struct ProcessHandle(HANDLE);
+
+    impl ProcessHandle {
+        /// `None` si le processus n'existe plus.
+        pub fn open(pid: u32) -> Option<Self> {
+            // SAFETY : ouverture d'un handle sur un processus lancé par l'app.
+            let h = unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, 0, pid) };
+            (!h.is_null()).then_some(Self(h))
+        }
+
+        /// Vrai si le processus se termine avant `timeout`.
+        pub fn wait(&self, timeout: Duration) -> bool {
+            let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
+            // SAFETY : handle valide, ouvert avec PROCESS_SYNCHRONIZE.
+            unsafe { WaitForSingleObject(self.0, ms) == WAIT_OBJECT_0 }
+        }
+
+        /// Arrêt forcé (le processus seul : l'objet job est fermé avec `CommandChild`).
+        pub fn terminate(&self) -> std::io::Result<()> {
+            // SAFETY : handle valide, ouvert avec PROCESS_TERMINATE.
+            if unsafe { TerminateProcess(self.0, 1) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for ProcessHandle {
+        fn drop(&mut self) {
+            // SAFETY : handle ouvert par `open`, fermé une seule fois.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -427,6 +525,52 @@ mod tests {
         // `exec` : le signal arrive à sleep lui-même, qui s'arrête aussitôt.
         let (pid, waiter) = spawn_reaped("exec sleep 30");
         assert!(graceful_stop(pid, Duration::from_secs(5)));
+        assert!(!waiter.join().unwrap().success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_closes_stdin_for_graceful_exit() {
+        // Comme `studiod --exit-on-stdin-eof` : ignore SIGTERM mais s'arrête à la fin
+        // de l'entrée standard.
+        let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "trap '' TERM; cat >/dev/null; exit 0"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        drop(_guard);
+        let stdin = child.stdin.take().unwrap();
+        let pid = child.id();
+        let waiter = std::thread::spawn(move || child.wait().unwrap());
+        std::thread::sleep(Duration::from_millis(100));
+        let start = Instant::now();
+        assert!(EngineProcess::open(pid).stop(move || drop(stdin), Duration::from_secs(5)));
+        assert!(start.elapsed() < Duration::from_secs(5));
+        assert!(
+            waiter.join().unwrap().success(),
+            "sortie normale, pas d'arrêt forcé"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_kills_process_group_after_timeout() {
+        use std::os::unix::process::CommandExt;
+        // Ignore SIGTERM et n'écoute pas l'entrée standard : arrêt forcé du groupe.
+        let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "trap '' TERM; while :; do sleep 0.05; done"])
+            .stdin(std::process::Stdio::piped())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        drop(_guard);
+        let stdin = child.stdin.take().unwrap();
+        let pid = child.id();
+        let waiter = std::thread::spawn(move || child.wait().unwrap());
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!EngineProcess::open(pid).stop(move || drop(stdin), Duration::from_millis(300)));
         assert!(!waiter.join().unwrap().success());
     }
 
