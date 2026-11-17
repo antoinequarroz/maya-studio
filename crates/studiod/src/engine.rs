@@ -6,14 +6,20 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
-use studio_core::{Canvas, Change, Compositor, Studio};
+use studio_core::{Canvas, Change, Compositor, SourceKind, Studio};
 use suite_protocol::ServerMessage;
 use tokio::sync::broadcast;
+use uuid::Uuid;
 
+use crate::media::MediaStore;
+use crate::mixer::{self, LevelMeter, MixBus, BLOCK_FRAMES, BLOCK_MS, BLOCK_SAMPLES};
 use crate::outputs::{
     self, AudioSink, Backend, EncoderChoice, Output, OutputKind, OutputSettings, RecordFormat,
     AUDIO_CHANNELS, DEFAULT_RECORD_BITRATE_KBPS, DEFAULT_STREAM_BITRATE_KBPS,
 };
+
+/// Période des événements `InputLevels`, en blocs de mixage (10 × 10 ms).
+const LEVELS_EVERY_BLOCKS: u64 = 10;
 
 /// Réglages des sorties fixés au lancement de `studiod`.
 #[derive(Debug, Clone)]
@@ -52,8 +58,10 @@ struct ActiveOutput {
     output: Box<dyn Output>,
     /// Canvas avec lequel la sortie a été configurée (taille des images, cadence).
     canvas: Canvas,
-    /// Entrée audio : le moteur y pousse du silence calé sur les images.
+    /// Entrée audio : le mixeur y pousse le son, calé sur les images.
     audio: Option<Arc<dyn AudioSink>>,
+    /// Échantillons (par canal) déjà poussés dans `audio` : position de la piste audio.
+    audio_pos: u64,
     started: Instant,
     /// Images envoyées à la sortie (y compris celles qu'elle a dû perdre).
     frames: u64,
@@ -112,6 +120,10 @@ pub struct Engine {
     /// Arrêt de `studiod` demandé : plus aucune sortie ne peut démarrer.
     shutting_down: AtomicBool,
     compositor: Mutex<Compositor>,
+    /// Dernières images et son des sources de capture.
+    media: Arc<MediaStore>,
+    #[cfg(feature = "gstreamer")]
+    captures: crate::captures::CaptureManager,
     events: broadcast::Sender<ServerMessage>,
     frame: Mutex<u64>,
     pub recordings_dir: std::path::PathBuf,
@@ -125,11 +137,27 @@ impl Engine {
         output_config: OutputConfig,
     ) -> Arc<Self> {
         let (events, _) = broadcast::channel(256);
+        let media = Arc::new(MediaStore::default());
+        #[cfg(feature = "gstreamer")]
+        let captures = {
+            let tx = events.clone();
+            let emit: crate::captures::EmitFn = Arc::new(move |event_type: &str, data: Value| {
+                let _ = tx.send(ServerMessage::Event {
+                    app: "studio".into(),
+                    event_type: event_type.to_string(),
+                    data,
+                });
+            });
+            crate::captures::CaptureManager::new(Arc::clone(&media), emit)
+        };
         Arc::new(Self {
             studio: Mutex::new(studio),
             outputs: Mutex::new(Outputs::default()),
             shutting_down: AtomicBool::new(false),
             compositor: Mutex::new(Compositor::new()),
+            media,
+            #[cfg(feature = "gstreamer")]
+            captures,
             events,
             frame: Mutex::new(0),
             recordings_dir,
@@ -161,6 +189,51 @@ impl Engine {
         *self.frame.lock().unwrap()
     }
 
+    /// Met les pipelines de capture en accord avec les sources des scènes. Appelé
+    /// après chaque changement d'état et au lancement de la boucle de rendu.
+    pub fn sync_captures(&self) {
+        let wanted: Vec<(Uuid, SourceKind)> = self
+            .studio
+            .lock()
+            .unwrap()
+            .capture_sources()
+            .map(|s| (s.id, s.kind.clone()))
+            .collect();
+        #[cfg(feature = "gstreamer")]
+        self.captures.sync(&wanted);
+        #[cfg(not(feature = "gstreamer"))]
+        if !wanted.is_empty() {
+            tracing::warn!("studiod compilé sans GStreamer : les sources de capture restent vides");
+        }
+    }
+
+    /// Sources dont la capture tourne ou redémarre.
+    pub fn running_captures(&self) -> Vec<Uuid> {
+        #[cfg(feature = "gstreamer")]
+        return self.captures.running();
+        #[cfg(not(feature = "gstreamer"))]
+        Vec::new()
+    }
+
+    /// Arrête toutes les captures (fermeture de `studiod`).
+    pub fn shutdown_captures(&self) {
+        #[cfg(feature = "gstreamer")]
+        self.captures.stop_all();
+    }
+
+    /// Médias des sources de capture (images, son).
+    pub fn media(&self) -> &Arc<MediaStore> {
+        &self.media
+    }
+
+    /// Périphériques d'entrée (requête `GetInputDevices`).
+    pub fn input_devices(&self) -> Value {
+        #[cfg(feature = "gstreamer")]
+        return json!(crate::devices::list());
+        #[cfg(not(feature = "gstreamer"))]
+        json!({ "video": [], "audio": [] })
+    }
+
     /// Image de la scène demandée (programme par défaut), encodée en PNG ou JPEG.
     pub fn screenshot(&self, scene_key: Option<&str>, jpeg: bool) -> Result<Vec<u8>, String> {
         let (canvas, scene) = {
@@ -171,11 +244,12 @@ impl Engine {
             };
             (studio.canvas, scene)
         };
-        let img = self
-            .compositor
-            .lock()
-            .unwrap()
-            .render_image(canvas, &scene, self.frame_count());
+        let img = self.compositor.lock().unwrap().render_image_with(
+            canvas,
+            &scene,
+            self.frame_count(),
+            &*self.media,
+        );
         let mut out = std::io::Cursor::new(Vec::new());
         let fmt = if jpeg {
             image::ImageFormat::Jpeg
@@ -279,6 +353,7 @@ impl Engine {
         let output = outputs::start(self.output_config.backend, &settings)?;
         let active = ActiveOutput {
             audio: output.audio_sink(),
+            audio_pos: 0,
             output,
             canvas,
             started: Instant::now(),
@@ -378,14 +453,25 @@ impl Engine {
         !self.outputs.lock().unwrap().active.is_empty()
     }
 
-    /// Boucle de rendu à la cadence du canvas, dans un thread dédié.
+    /// Arrête les sorties en échec et prévient les clients.
+    fn fail_outputs(&self, failed: Vec<(OutputKind, String)>) {
+        for (kind, error) in failed {
+            tracing::warn!(?kind, %error, "sortie en échec");
+            let _ = self.stop_output(kind);
+            self.emit("OutputFailed", json!({ "output": kind, "error": error }));
+        }
+    }
+
+    /// Lance la boucle de rendu et le mixeur audio, et démarre les captures des
+    /// sources déjà présentes.
     pub fn spawn_render_loop(self: &Arc<Self>) {
+        self.sync_captures();
+        self.spawn_audio_mixer();
         let engine = Arc::clone(self);
         std::thread::Builder::new()
             .name("render".into())
             .spawn(move || {
                 let mut buf = Vec::new();
-                let mut silence: Vec<i16> = Vec::new();
                 let mut next = Instant::now();
                 loop {
                     let (canvas, scene) = {
@@ -399,11 +485,13 @@ impl Engine {
                     };
                     let has_outputs = engine.has_active_outputs();
                     if has_outputs {
-                        engine
-                            .compositor
-                            .lock()
-                            .unwrap()
-                            .render(canvas, &scene, frame, &mut buf);
+                        engine.compositor.lock().unwrap().render_with(
+                            canvas,
+                            &scene,
+                            frame,
+                            &*engine.media,
+                            &mut buf,
+                        );
                         let mut failed = Vec::new();
                         {
                             let mut outputs = engine.outputs.lock().unwrap();
@@ -413,30 +501,15 @@ impl Engine {
                                 if active.canvas != canvas {
                                     continue;
                                 }
-                                let n = active.frames;
                                 if let Err(e) = active.output.push_frame(&buf) {
                                     failed.push((*kind, e.to_string()));
                                     continue;
                                 }
+                                // Le son est poussé par le mixeur, calé sur ce compteur.
                                 active.frames += 1;
-                                // Silence calé sur l'horodatage de cette image ; le mixeur
-                                // audio poussera ici le vrai son.
-                                if let Some(audio) = &active.audio {
-                                    let samples =
-                                        outputs::audio_samples_for_frame(n, active.canvas.fps)
-                                            * AUDIO_CHANNELS as usize;
-                                    silence.resize(samples, 0);
-                                    if let Err(e) = audio.push_audio(&silence[..samples]) {
-                                        failed.push((*kind, e.to_string()));
-                                    }
-                                }
                             }
                         }
-                        for (kind, error) in failed {
-                            tracing::warn!(?kind, %error, "sortie en échec");
-                            let _ = engine.stop_output(kind);
-                            engine.emit("OutputFailed", json!({ "output": kind, "error": error }));
-                        }
+                        engine.fail_outputs(failed);
                     }
                     let period = Duration::from_secs_f64(1.0 / canvas.fps.max(1) as f64);
                     next += period;
@@ -450,6 +523,137 @@ impl Engine {
                 }
             })
             .expect("thread de rendu");
+    }
+
+    /// Pousse un bloc mixé dans l'entrée audio de chaque sortie active, calé sur
+    /// l'horodatage vidéo de la sortie (voir [`mixer::plan_block`]).
+    fn push_mixed_audio(&self, block: &[i16]) {
+        let mut failed = Vec::new();
+        {
+            let mut outputs = self.outputs.lock().unwrap();
+            for (kind, active) in outputs.active.iter_mut() {
+                let Some(audio) = &active.audio else {
+                    continue;
+                };
+                let Some(silence) =
+                    mixer::plan_block(active.frames, active.canvas.fps, active.audio_pos)
+                else {
+                    continue;
+                };
+                let mut result = Ok(());
+                if silence > 0 {
+                    let zeros = vec![0i16; silence as usize * AUDIO_CHANNELS as usize];
+                    result = audio.push_audio(&zeros);
+                }
+                if result.is_ok() {
+                    result = audio.push_audio(block);
+                }
+                match result {
+                    Ok(()) => active.audio_pos += silence + BLOCK_FRAMES as u64,
+                    Err(e) => failed.push((*kind, e.to_string())),
+                }
+            }
+        }
+        self.fail_outputs(failed);
+    }
+
+    /// Thread du mixeur : toutes les 10 ms, tire un bloc de chaque source audio,
+    /// mixe les sources audibles (scène programme, visibles, non coupées) avec leur
+    /// volume, pousse le résultat dans les sorties (du silence s'il n'y a aucune
+    /// source) et émet `InputLevels` environ 10 fois par seconde.
+    fn spawn_audio_mixer(self: &Arc<Self>) {
+        let engine = Arc::clone(self);
+        std::thread::Builder::new()
+            .name("audio-mixer".into())
+            .spawn(move || {
+                let mut bus = MixBus::new(BLOCK_SAMPLES);
+                let mut input = vec![0i16; BLOCK_SAMPLES];
+                let mut block = vec![0i16; BLOCK_SAMPLES];
+                let mut meters: HashMap<Uuid, LevelMeter> = HashMap::new();
+                let period = Duration::from_millis(u64::from(BLOCK_MS));
+                let mut blocks: u64 = 0;
+                let mut next = Instant::now();
+                loop {
+                    // Réglages audio : (volume, coupé, audible).
+                    let settings: HashMap<Uuid, (f32, bool, bool)> = {
+                        let s = engine.studio.lock().unwrap();
+                        let program = s.program_scene;
+                        s.scenes
+                            .iter()
+                            .flat_map(|sc| {
+                                sc.sources
+                                    .iter()
+                                    .filter(|x| x.kind.has_audio())
+                                    .map(move |x| {
+                                        (x.id, (x.volume, x.muted, sc.id == program && x.visible))
+                                    })
+                            })
+                            .collect()
+                    };
+                    bus.clear();
+                    for (id, media) in engine.media.audio_sources() {
+                        let Some(audio) = media.audio.as_ref() else {
+                            continue;
+                        };
+                        // Toutes les files sont vidées, même hors antenne, pour qu'une
+                        // source reparte sans retard quand sa scène passe à l'antenne.
+                        audio.pull(&mut input);
+                        let Some(&(volume, muted, audible)) = settings.get(&id) else {
+                            continue;
+                        };
+                        meters.entry(id).or_default().add(&input, volume);
+                        if audible {
+                            bus.add_source(&input, volume, muted);
+                        }
+                    }
+                    bus.output(&mut block);
+                    engine.push_mixed_audio(&block);
+                    blocks += 1;
+                    if blocks.is_multiple_of(LEVELS_EVERY_BLOCKS) {
+                        meters.retain(|id, _| settings.contains_key(id));
+                        engine.emit_levels(&mut meters, &settings);
+                    }
+                    next += period;
+                    let now = Instant::now();
+                    if next > now {
+                        std::thread::sleep(next - now);
+                    } else if now - next > period * 10 {
+                        // Gros retard (machine suspendue…) : on se recale. Les petits
+                        // retards sont rattrapés, l'audio garde son débit moyen.
+                        next = now;
+                    }
+                }
+            })
+            .expect("thread du mixeur audio");
+    }
+
+    /// Émet `InputLevels` (crête et RMS en dBFS par canal) si des clients écoutent.
+    fn emit_levels(
+        &self,
+        meters: &mut HashMap<Uuid, LevelMeter>,
+        settings: &HashMap<Uuid, (f32, bool, bool)>,
+    ) {
+        if meters.is_empty() || self.events.receiver_count() == 0 {
+            for m in meters.values_mut() {
+                m.take();
+            }
+            return;
+        }
+        let sources: Vec<Value> = meters
+            .iter_mut()
+            .map(|(id, m)| {
+                let l = m.take();
+                let (_, muted, audible) = settings.get(id).copied().unwrap_or_default();
+                json!({
+                    "source_id": id,
+                    "peak_db": l.peak_db.map(mixer::round_db),
+                    "rms_db": l.rms_db.map(mixer::round_db),
+                    "muted": muted,
+                    "audible": audible,
+                })
+            })
+            .collect();
+        self.emit("InputLevels", json!({ "sources": sources }));
     }
 }
 

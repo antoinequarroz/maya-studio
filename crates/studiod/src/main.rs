@@ -89,9 +89,13 @@ async fn main() -> std::io::Result<()> {
         }
     };
     // Sans cela, un MP4 non fragmenté en cours resterait illisible (atome moov absent).
-    let stopped = tokio::task::spawn_blocking(move || engine.shutdown_outputs())
-        .await
-        .unwrap_or_default();
+    let stopped = tokio::task::spawn_blocking(move || {
+        let stopped = engine.shutdown_outputs();
+        engine.shutdown_captures();
+        stopped
+    })
+    .await
+    .unwrap_or_default();
     for data in &stopped {
         tracing::info!(
             output = %data["output"],

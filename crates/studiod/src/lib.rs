@@ -11,5 +11,6 @@ pub mod devices;
 pub mod encoders;
 pub mod engine;
 pub mod media;
+pub mod mixer;
 pub mod outputs;
 pub mod server;
