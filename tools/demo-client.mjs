@@ -2,12 +2,15 @@
 // Il fait ce que Nino fera : créer des scènes, placer des sources, couper,
 // enregistrer quelques secondes et récupérer une capture d'écran.
 //
-// Usage : node tools/demo-client.mjs [ws://127.0.0.1:4460] [jeton]
+// Usage : node tools/demo-client.mjs [ws://127.0.0.1:4460] [jeton] [mp4|mkv] [url-de-diffusion]
+//   ex. : node tools/demo-client.mjs ws://127.0.0.1:4460 "" mp4 "srt://127.0.0.1:9000"
 
 import { writeFileSync } from "node:fs";
 
 const url = process.argv[2] ?? "ws://127.0.0.1:4460";
-const token = process.argv[3];
+const token = process.argv[3] || undefined;
+const format = process.argv[4] || "mp4";
+const streamUrl = process.argv[5];
 const ws = new WebSocket(url);
 const pending = new Map();
 let nextId = 1;
@@ -47,6 +50,14 @@ ws.onmessage = async (e) => {
 async function run() {
   console.log("requêtes :", (await request("GetRequestList")).requests.length);
 
+  const enc = await request("GetEncoders");
+  console.log(`encodeurs (backend ${enc.backend}, demandé : ${enc.requested}) :`);
+  for (const e of enc.encoders) {
+    const tags = [e.hardware ? "matériel" : "logiciel", e.available ? "disponible" : "absent"];
+    if (e.gpl) tags.push("GPL");
+    console.log(`  ${e.selected ? "→" : " "} ${e.name} (${tags.join(", ")})`);
+  }
+
   await request("CreateScene", { name: "Plateau" });
   await request("AddSource", { scene: "Plateau", name: "Fond", kind: "color", rgba: [20, 30, 60, 255] });
   await request("AddSource", {
@@ -58,8 +69,12 @@ async function run() {
     transform: { x: 0, y: 600, width: 1280, height: 80, opacity: 0.85 },
   });
 
-  const rec = await request("StartRecording", {});
-  console.log("enregistrement vers", rec.target);
+  const rec = await request("StartRecording", { format });
+  console.log(`enregistrement vers ${rec.target} (${rec.format}, ${rec.encoder}, ${rec.bitrate_kbps} kbit/s)`);
+  if (streamUrl) {
+    const st = await request("StartStream", { url: streamUrl, bitrate_kbps: 2500 });
+    console.log(`diffusion vers ${st.target} (${st.encoder})`);
+  }
   await sleep(1500);
 
   await request("SetPreviewScene", { scene: "Plateau" });
@@ -69,8 +84,18 @@ async function run() {
   await request("UpdateSource", { scene: "Plateau", source: "Bandeau", visible: false });
   await sleep(1000);
 
+  const status = await request("GetOutputStatus");
+  console.log(`statut : ${status.record.frames} images, ${status.record.dropped_frames} perdues`);
+
+  if (streamUrl) {
+    const st = await request("StopStream");
+    console.log(`diffusé : ${st.frames} images, ${st.dropped_frames} perdues`);
+  }
   const stop = await request("StopRecording");
-  console.log(`enregistré : ${stop.frames} images en ${stop.duration_s.toFixed(1)} s`);
+  console.log(
+    `enregistré : ${stop.frames} images en ${stop.duration_s.toFixed(1)} s, ` +
+    `${stop.dropped_frames} perdues, finalisé : ${stop.finalized}`,
+  );
 
   await request("UpdateSource", { scene: "Plateau", source: "Bandeau", visible: true });
   const shot = await request("GetScreenshot", { format: "png" });
