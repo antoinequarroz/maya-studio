@@ -597,9 +597,12 @@ mod tests {
             (OutputKind::Stream, "rtmp://h/a/k", RecordFormat::Mp4),
             (OutputKind::Stream, "srt://h:1", RecordFormat::Mp4),
         ] {
-            let plan =
-                PipelinePlan::new(&settings(kind, target, format), "openh264enc", "avenc_aac")
-                    .unwrap();
+            let plan = PipelinePlan::new(
+                &settings(kind, target, format),
+                crate::encoders::test_encoder(),
+                "avenc_aac",
+            )
+            .unwrap();
             gst::parse::launch(&plan.description()).unwrap_or_else(|e| panic!("{target} : {e}"));
         }
     }

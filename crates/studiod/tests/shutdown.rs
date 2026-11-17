@@ -39,7 +39,11 @@ async fn run_signal_test(signal: &str) {
     let addr = format!("127.0.0.1:{}", free_port());
     let mut child = Command::new(env!("CARGO_BIN_EXE_studiod"))
         .args(["--listen", &addr, "--width", "320", "--height", "240"])
-        .args(["--encoder", "openh264enc", "--recordings"])
+        .args([
+            "--encoder",
+            studiod::encoders::test_encoder(),
+            "--recordings",
+        ])
         .arg(&dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())

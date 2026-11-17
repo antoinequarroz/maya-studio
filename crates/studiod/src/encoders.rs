@@ -110,6 +110,27 @@ fn probe_uncached(name: &str) -> bool {
     ok
 }
 
+/// Encodeurs logiciels utilisables par les tests, par ordre de préférence.
+/// `openh264enc` manque dans le GStreamer de Homebrew (macOS) : on prend alors
+/// `vtenc_h264` (VideoToolbox, présent sur tout Mac) ou `mfh264enc` (Windows).
+/// `x264enc` (GPL) n'est accepté qu'en dernier recours, pour les tests seulement.
+pub const TEST_ENCODERS: &[&str] = &["openh264enc", "vtenc_h264", "mfh264enc", "x264enc"];
+
+/// Premier encodeur de [`TEST_ENCODERS`] présent sur la machine.
+/// Panique avec un message clair s'il n'y en a aucun : les tests ne sont jamais sautés.
+pub fn test_encoder() -> &'static str {
+    TEST_ENCODERS
+        .iter()
+        .copied()
+        .find(|n| probe(n))
+        .unwrap_or_else(|| {
+            panic!(
+                "aucun encodeur H.264 logiciel pour les tests (essayés : {})",
+                TEST_ENCODERS.join(", ")
+            )
+        })
+}
+
 /// Choisit l'encodeur H.264 à utiliser.
 pub fn select(choice: &EncoderChoice) -> Result<String, String> {
     select_with(choice, std::env::consts::OS, probe)
@@ -128,7 +149,7 @@ pub fn select_with(
             .map(str::to_string)
             .ok_or_else(|| {
                 format!(
-                    "aucun encodeur H.264 disponible (essayés : {}) ; installe gst-plugins-bad (openh264)",
+                    "aucun encodeur H.264 disponible (essayés : {}) ; installe les plugins GStreamer « bad » avec openh264",
                     auto_candidates(os).join(", ")
                 )
             }),
@@ -398,10 +419,25 @@ mod tests {
     #[test]
     fn tuning_applies_only_existing_properties() {
         gst::init().unwrap();
-        let enc = gst::ElementFactory::make("openh264enc").build().unwrap();
-        apply(&enc, &video_tuning("openh264enc", 3000, 30));
-        assert_eq!(enc.property::<u32>("bitrate"), 3_000_000);
-        assert_eq!(enc.property::<u32>("gop-size"), 60);
+        let name = test_encoder();
+        let enc = gst::ElementFactory::make(name).build().unwrap();
+        let tuning = video_tuning(name, 3000, 30);
+        apply(&enc, &tuning);
+        // Le débit attendu dépend des unités de l'élément (bit/s ou kbit/s).
+        let expected = tuning
+            .iter()
+            .find_map(|(k, v)| match (k, v) {
+                (&"bitrate", PropValue::Uint(b)) => Some(*b),
+                _ => None,
+            })
+            .unwrap();
+        let actual = enc
+            .property_value("bitrate")
+            .transform::<u64>()
+            .unwrap()
+            .get::<u64>()
+            .unwrap();
+        assert_eq!(actual, expected, "{name} : débit");
         // Propriété inexistante ou nick invalide : ignorés sans paniquer.
         assert!(!set_if_exists(&enc, "n-existe-pas", &PropValue::Bool(true)));
         assert!(!set_if_exists(
@@ -413,7 +449,7 @@ mod tests {
 
     #[test]
     fn probe_software_fallback() {
-        assert!(probe("openh264enc"));
+        assert!(probe(test_encoder()));
         assert!(!probe("encodeur-qui-n-existe-pas"));
         assert!(!is_hardware("openh264enc"));
         assert!(is_hardware("nvh264enc"));

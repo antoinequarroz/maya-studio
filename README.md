@@ -64,6 +64,10 @@ brew install gstreamer
 # le paquet inclut base, good, bad (openh264, vtenc, srt, rtmp2), ugly et libav
 ```
 
+Le GStreamer de Homebrew ne contient pas `openh264enc` : sur Mac, l'encodage passe donc
+toujours par VideoToolbox (`vtenc_h264_hw`, ou `vtenc_h264` sans puce dédiée), et les tests
+utilisent `vtenc_h264` à la place d'openh264.
+
 VideoToolbox (`vtenc_h264_hw`) est fourni par gst-plugins-bad et utilisé automatiquement
 sur les Mac Apple Silicon et Intel.
 
