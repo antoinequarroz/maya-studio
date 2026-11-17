@@ -44,6 +44,11 @@ struct Args {
     /// Débit vidéo de la diffusion, en kbit/s.
     #[arg(long, default_value_t = DEFAULT_STREAM_BITRATE_KBPS)]
     stream_bitrate: u32,
+    /// S'arrêter quand l'entrée standard se ferme. À utiliser quand studiod est lancé
+    /// par une autre app (sidecar) qui garde le côté écriture du tube : si cette app
+    /// meurt, même brutalement, le système ferme le tube et le moteur s'arrête aussi.
+    #[arg(long)]
+    exit_on_stdin_eof: bool,
 }
 
 #[tokio::main]
@@ -81,10 +86,23 @@ async fn main() -> std::io::Result<()> {
 
     let engine = engine::Engine::new(studio, args.recordings, output_config);
     engine.spawn_render_loop();
+    // Avec --exit-on-stdin-eof, la fermeture de l'entrée standard (app parente partie)
+    // suit le même chemin d'arrêt propre qu'un signal.
+    let parent_gone = async {
+        if args.exit_on_stdin_eof {
+            watch_parent().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
     let result = tokio::select! {
         r = server::serve(std::sync::Arc::clone(&engine), &args.listen, args.token) => r,
         signal = shutdown_signal() => {
             tracing::info!(%signal, "arrêt demandé, finalisation des sorties");
+            Ok(())
+        }
+        _ = parent_gone => {
+            tracing::warn!("entrée standard fermée : l'app parente est partie, arrêt du moteur");
             Ok(())
         }
     };
@@ -165,5 +183,28 @@ fn check_backend(cfg: &OutputConfig) -> std::io::Result<()> {
         Backend::Gstreamer => Err(std::io::Error::other(
             "studiod a été compilé sans la fonctionnalité « gstreamer » : utilise --output-backend ffmpeg",
         )),
+    }
+}
+
+/// Attend la fin de l'entrée standard, lue dans un thread dédié (la lecture de stdin
+/// est bloquante). Le chemin d'arrêt propre (sorties finalisées, captures arrêtées) est
+/// ensuite celui de `main`, comme pour SIGINT / SIGTERM.
+async fn watch_parent() {
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let spawned = std::thread::Builder::new()
+        .name("parent-watch".into())
+        .spawn(move || {
+            // On lit et on jette : seul compte le moment où le tube se ferme.
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            let _ = tx.send(());
+        });
+    match spawned {
+        Ok(_) => {
+            let _ = rx.await;
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "surveillance de l'app parente impossible");
+            std::future::pending::<()>().await;
+        }
     }
 }

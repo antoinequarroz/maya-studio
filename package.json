@@ -1,0 +1,19 @@
+{
+  "name": "maya-studio",
+  "private": true,
+  "description": "Maya Studio : espace de travail npm (client TypeScript de la suite, app desktop).",
+  "workspaces": [
+    "packages/suite-client",
+    "apps/desktop"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "desktop:dev": "npm run tauri dev --workspace apps/desktop",
+    "web:dev": "npm run dev --workspace apps/desktop"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
