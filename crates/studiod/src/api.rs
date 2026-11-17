@@ -173,7 +173,18 @@ pub fn handle(engine: &Engine, request_type: &str, data: Value) -> Result<Value,
     if !data.is_null() {
         envelope["data"] = data;
     }
-    let req: Request = serde_json::from_value(envelope).map_err(|e| {
+    // Une requête dont tous les champs sont optionnels peut arriver sans `data` :
+    // on réessaie alors avec un objet vide plutôt que de répondre « missing field data ».
+    let parsed = serde_json::from_value::<Request>(envelope.clone()).or_else(|e| {
+        if envelope.get("data").is_none() {
+            let mut with_empty = envelope;
+            with_empty["data"] = json!({});
+            serde_json::from_value(with_empty).map_err(|_| e)
+        } else {
+            Err(e)
+        }
+    });
+    let req: Request = parsed.map_err(|e| {
         (
             "invalid_data".to_string(),
             format!("données invalides : {e}"),
@@ -333,6 +344,21 @@ mod tests {
             std::env::temp_dir(),
             OutputConfig::default(),
         )
+    }
+
+    #[test]
+    fn optional_only_requests_accept_missing_data() {
+        // Sans `data` : GetScreenshot (champs tous optionnels) et Cut (aucun champ).
+        let e = engine();
+        let shot = handle(&e, "GetScreenshot", Value::Null).unwrap();
+        assert!(shot["image"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png"));
+        assert!(handle(&e, "Cut", Value::Null).is_ok());
+        // Un champ obligatoire manquant reste une erreur invalid_data.
+        let err = handle(&e, "CreateScene", Value::Null).unwrap_err();
+        assert_eq!(err.0, "invalid_data");
     }
 
     #[test]
