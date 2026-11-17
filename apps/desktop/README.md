@@ -20,10 +20,22 @@ Cycle de vie du moteur lancé par l'app :
 
 - **Mode studio** : moniteurs Aperçu (vert) et Programme (rouge) côte à côte, bouton **Couper**.
 - **Scènes** : créer, renommer, supprimer ; clic = aperçu, double-clic = programme.
-- **Sources** de la scène en aperçu : ajouter (couleur, image, mire), masquer, monter /
-  descendre, supprimer ; **Propriétés** : nom, couleur ou chemin, position, taille, opacité.
-- **Sorties** : démarrer / arrêter l'enregistrement et le direct (serveur RTMP/SRT + clé),
-  durée et images en temps réel.
+- **Sources** de la scène en aperçu : ajouter (couleur, image, mire, **caméra**, **écran**,
+  **micro / entrée audio**, **fichier vidéo**, **flux SRT**), masquer, monter / descendre,
+  supprimer. Caméras et entrées audio se choisissent dans la liste des périphériques du
+  moteur (`GetInputDevices`, par exemple une Scarlett 2i2), ou « par défaut du système ».
+  Chaque source de capture porte une pastille d'état : *démarrage*, *en marche* ou
+  *en échec* (erreur en infobulle et dans les propriétés ; le moteur réessaie seul).
+- **Propriétés** : nom, réglages du type (couleur, chemin, fichier et boucle, URL SRT,
+  périphérique), état de la capture, position, taille, opacité.
+- **Audio** : une tranche par source sonore (micro, fichier vidéo, SRT) de la scène **à
+  l'antenne** — c'est elle qui part dans le mix — avec volume de 0 à 200 % (double-clic :
+  100 %), coupure et VU-mètre stéréo (crête et RMS en dBFS, `InputLevels`, descente douce
+  et crête maintenue). Les niveaux ne passent pas par l'état React : chaque VU-mètre se
+  redessine en `requestAnimationFrame`.
+- **Sorties** : démarrer / arrêter l'enregistrement (format **MP4** ou **MKV**) et le direct
+  (serveur RTMP/SRT + clé), durée, images et encodeur utilisé (`vtenc_h264_hw`,
+  `openh264enc`…, matériel ou logiciel) en temps réel ; au repos, l'encodeur prévu.
 - **Barre d'état** : connexion, canvas, cadence.
 - Raccourcis : <kbd>Espace</kbd> ou <kbd>Entrée</kbd> = couper, <kbd>1</kbd>…<kbd>9</kbd> = scène en aperçu.
 
@@ -37,7 +49,7 @@ côté Tauri) fera l'objet d'un ticket dédié.
 
 ## Lancer
 
-Prérequis communs : Rust stable, Node 22+, `ffmpeg` dans le PATH (backend de sortie provisoire).
+Prérequis communs : Rust stable, Node 22+, GStreamer (voir le [README principal](../../README.md#installer-gstreamer)).
 À la racine du dépôt : `npm install` puis `npm run build` (compile `@suite-media/client`).
 
 ### macOS
@@ -85,6 +97,9 @@ VITE_STUDIO_URL=ws://127.0.0.1:4460 VITE_STUDIO_TOKEN="$STUDIO_TOKEN" npm run de
 Ou ouvrir `http://localhost:5173/?url=ws://127.0.0.1:4460&token=<votre jeton>`. Sans configuration,
 un écran de connexion demande l'adresse et le jeton.
 
+Les chemins (image, fichier vidéo) et les périphériques sont ceux de la **machine du
+moteur** : le front-end n'ouvre pas de sélecteur de fichier, il envoie le chemin saisi.
+
 ## Structure
 
 ```
@@ -92,8 +107,11 @@ src/
   connection.ts           d'où viennent l'URL et le jeton (Tauri, ?url=, VITE_*, écran de connexion)
   studio/StudioContext    client unique, état tenu par les événements, sorties, notifications
   studio/useScreenshot    moniteurs (interrogation JPEG)
-  components/             moniteurs, scènes, sources, propriétés, sorties, fenêtres modales
-test/                     tests Vitest (jsdom) : champs, raccourcis, sélection, erreurs fatales
+  components/             moniteurs, scènes, sources, propriétés, audio, sorties, fenêtres modales
+  audio/meter.ts          échelle et balistique des VU-mètres (sans React)
+  sourceKinds.ts          libellés et résumés des types de source
+test/                     tests Vitest (jsdom) : champs, raccourcis, sélection, erreurs fatales,
+                          VU-mètres, choix des périphériques, encodeur affiché
 src-tauri/
   src/lib.rs              lancement et relance du sidecar, commande studio_connection, arrêt à la fermeture
   tauri.conf.json         externalBin = binaries/studiod

@@ -16,7 +16,7 @@
         "title": "Maya Studio",
         "width": 1440,
         "height": 900,
-        "minWidth": 1100,
+        "minWidth": 1220,
         "minHeight": 700,
         "backgroundColor": "#0b0d10",
         "theme": "Dark"

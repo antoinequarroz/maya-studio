@@ -1,11 +1,39 @@
 /** Sorties : enregistrement et direct (RTMP / SRT), avec état en temps réel. */
 
-import type { OutputState } from "@suite-media/client";
+import type { EncodersInfo, OutputState, RecordFormat } from "@suite-media/client";
 import { useState } from "react";
 import { useStudio } from "../studio/StudioContext";
 import { IconBroadcast, IconRecord, IconStop } from "./Icons";
 
 const STREAM_URL_KEY = "maya-studio.stream-url";
+const RECORD_FORMAT_KEY = "maya-studio.record-format";
+
+const FORMATS: Array<{ format: RecordFormat; label: string; hint: string }> = [
+  { format: "mp4", label: "MP4", hint: "MP4 : lu partout ; finalisé à l'arrêt de l'enregistrement" },
+  { format: "mkv", label: "MKV", hint: "Matroska : reste lisible même après un arrêt brutal" },
+];
+
+/**
+ * Encodeur à afficher : celui de la sortie active, sinon celui que le moteur choisira
+ * pour la prochaine sortie (`GetEncoders`). Matériel / logiciel quand on le sait.
+ */
+export function describeEncoder(
+  state: OutputState | undefined,
+  encoders: EncodersInfo | null,
+): { name: string; kind: "matériel" | "logiciel" | null } | null {
+  const name = state?.active ? state.encoder : encoders?.encoders.find((e) => e.selected)?.name;
+  if (!name) return null;
+  const info = encoders?.encoders.find((e) => e.name === name);
+  return { name, kind: info ? (info.hardware ? "matériel" : "logiciel") : null };
+}
+
+function loadRecordFormat(): RecordFormat {
+  try {
+    return localStorage.getItem(RECORD_FORMAT_KEY) === "mkv" ? "mkv" : "mp4";
+  } catch {
+    return "mp4";
+  }
+}
 
 export function formatDuration(seconds: number | undefined): string {
   const s = Math.max(0, Math.floor(seconds ?? 0));
@@ -57,9 +85,30 @@ function OutputDetails({ state, target }: { state: OutputState | undefined; targ
       <span className="stat">
         <span className="muted">Images</span> {state.frames?.toLocaleString("fr-FR") ?? 0}
       </span>
+      {!!state.dropped_frames && (
+        <span className="stat warn" title="Images perdues : l'encodeur ou le réseau ne suivait pas">
+          <span className="muted">Perdues</span> {state.dropped_frames.toLocaleString("fr-FR")}
+        </span>
+      )}
       <span className="output-target" title={target}>
-        {target || "—"}
+        {/* Marques LTR : avec direction rtl (ellipse à gauche), un chemin garderait sinon son « / » à la fin. */}
+        {target ? `\u200e${target}\u200e` : "—"}
       </span>
+    </div>
+  );
+}
+
+/** Encodeur et débit : effectifs pendant la sortie, prévus sinon. */
+function EncoderLine({ state, encoders }: { state: OutputState | undefined; encoders: EncodersInfo | null }) {
+  const encoder = describeEncoder(state, encoders);
+  if (!encoder) return null;
+  const active = !!state?.active;
+  return (
+    <div className="encoder-line" title={active ? "Encodeur utilisé par cette sortie" : "Encodeur que le moteur utilisera"}>
+      <span className="muted">{active ? "Encodeur" : "Encodeur prévu"}</span>
+      <span className="mono">{encoder.name}</span>
+      {encoder.kind && <span className="muted">· {encoder.kind}</span>}
+      {active && state?.bitrate_kbps && <span className="muted">· {state.bitrate_kbps.toLocaleString("fr-FR")} kbit/s</span>}
     </div>
   );
 }
@@ -73,7 +122,8 @@ function loadStreamServer(): string {
 }
 
 export function OutputsPanel() {
-  const { outputs, run, connection } = useStudio();
+  const { outputs, run, connection, encoders } = useStudio();
+  const [format, setFormat] = useState<RecordFormat>(loadRecordFormat);
   const [busy, setBusy] = useState<"record" | "stream" | null>(null);
   const [server, setServer] = useState(loadStreamServer);
   const [key, setKey] = useState("");
@@ -84,7 +134,11 @@ export function OutputsPanel() {
 
   const toggleRecord = async () => {
     setBusy("record");
-    await run(recording ? "StopRecording" : "StartRecording");
+    if (recording) {
+      await run("StopRecording");
+    } else {
+      await run("StartRecording", { format });
+    }
     setBusy(null);
   };
 
@@ -120,6 +174,37 @@ export function OutputsPanel() {
             <OutputClock state={outputs?.record} />
           </div>
           <OutputDetails state={outputs?.record} target={outputs?.record.target} />
+          <div className="output-options">
+            <span className="muted small">Format</span>
+            <div className="segmented" role="radiogroup" aria-label="Format d'enregistrement">
+              {FORMATS.map((f) => {
+                // Pendant l'enregistrement, on montre le format réellement utilisé.
+                const checked = recording ? outputs?.record.format === f.format : format === f.format;
+                return (
+                  <button
+                    key={f.format}
+                    type="button"
+                    role="radio"
+                    aria-checked={checked}
+                    className={checked ? "selected" : undefined}
+                    title={f.hint}
+                    disabled={recording}
+                    onClick={() => {
+                      setFormat(f.format);
+                      try {
+                        localStorage.setItem(RECORD_FORMAT_KEY, f.format);
+                      } catch {
+                        // stockage indisponible
+                      }
+                    }}
+                  >
+                    {f.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <EncoderLine state={outputs?.record} encoders={encoders} />
           <button
             type="button"
             className={`button block ${recording ? "danger" : "rec"}`}
@@ -141,7 +226,10 @@ export function OutputsPanel() {
           {streaming ? (
             // Destination réelle du moteur (le direct a pu être lancé par une autre app),
             // sans la clé de diffusion.
-            <OutputDetails state={outputs?.stream} target={redactStreamTarget(outputs?.stream.target)} />
+            <>
+              <OutputDetails state={outputs?.stream} target={redactStreamTarget(outputs?.stream.target)} />
+              <EncoderLine state={outputs?.stream} encoders={encoders} />
+            </>
           ) : (
             <div className="form compact">
               <label className="field">

@@ -367,7 +367,9 @@ kbd {
 
 .docks {
   display: grid;
-  grid-template-columns: minmax(210px, 0.9fr) minmax(250px, 1.1fr) minmax(280px, 1.2fr) minmax(290px, 1fr);
+  grid-template-columns:
+    minmax(190px, 0.8fr) minmax(220px, 1.05fr) minmax(240px, 1.1fr)
+    minmax(230px, 1.05fr) minmax(260px, 1fr);
   gap: 10px;
   min-height: 0;
 }
@@ -665,7 +667,8 @@ input:focus-visible {
 input[type="text"],
 input[type="number"],
 input[type="password"],
-input:not([type]) {
+input:not([type]),
+select {
   height: 30px;
   width: 100%;
   padding: 0 9px;
@@ -707,6 +710,40 @@ input[type="range"] {
 .input-with-button {
   display: flex;
   gap: 4px;
+}
+.input-with-button > select,
+.input-with-button > input {
+  flex: 1;
+  min-width: 0;
+}
+select {
+  padding-right: 28px;
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 15px) 50%,
+    calc(100% - 10px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+  text-overflow: ellipsis;
+}
+select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+.icon-button.bordered {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel-2);
+}
+.field-hint {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .toggle {
@@ -948,7 +985,7 @@ input[type="range"] {
 
 .kind-picker {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
 }
 .kind-card {
@@ -963,9 +1000,19 @@ input[type="range"] {
   color: var(--text-2);
   cursor: pointer;
 }
+.kind-card strong {
+  font-size: 12.5px;
+  text-align: center;
+  line-height: 1.2;
+}
 .kind-card small {
   color: var(--muted);
   font-size: 11px;
+  text-align: center;
+}
+.kind-card:hover:not(.selected) {
+  border-color: #46505e;
+  color: var(--text);
 }
 .kind-card.selected {
   border-color: var(--accent);
@@ -1045,4 +1092,292 @@ input[type="range"] {
 }
 .scene-item:hover .row-actions {
   display: flex;
+}
+
+/* ---------- état des captures ---------- */
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 1px 7px 1px 6px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  cursor: default;
+}
+.status-badge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.status-badge.ok {
+  color: #6ee79a;
+  border-color: #1f5a33;
+  background: var(--preview-dim);
+}
+.status-badge.failed {
+  color: #ff9a9d;
+  border-color: #6e1f22;
+  background: var(--program-dim);
+}
+.status-badge.pending {
+  color: var(--text-2);
+  border-color: var(--border-strong);
+  background: var(--panel-3);
+}
+.status-badge.pending .dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.status-badge.failed .dot {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+/* Liste des sources : les boutons de ligne ne prennent de place qu'au survol et sur la
+   ligne sélectionnée, pour laisser le nom et l'état lisibles. */
+.source-item .row-actions {
+  display: none;
+}
+.source-item:hover .row-actions,
+.source-item.selected .row-actions {
+  display: flex;
+}
+/* Liste des sources : au survol et à la sélection, les boutons de ligne prennent la
+   place du texte de la pastille ; l'état reste visible par sa couleur et son infobulle. */
+.source-item:hover .status-badge,
+.source-item.selected .status-badge {
+  gap: 0;
+  padding: 0 5px;
+  font-size: 0;
+  line-height: 16px;
+}
+.status-badge.compact {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.capture-error {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  background: var(--program-dim);
+  border: 1px solid #6e1f22;
+  color: #ffc4c5;
+  font-size: 12px;
+  user-select: text;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- mixeur audio ---------- */
+
+.mixer {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mixer-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 7px 9px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+}
+.strip-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.strip-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.strip-volume {
+  font: 11.5px var(--mono);
+  color: var(--text-2);
+  min-width: 42px;
+  text-align: right;
+}
+.mute-button.on {
+  color: #ff8a8d;
+  background: var(--program-dim);
+}
+.mixer-strip.muted .strip-name,
+.mixer-strip.muted .strip-volume,
+.mixer-strip.hidden-source .strip-name {
+  color: var(--muted);
+}
+
+.meter {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-bottom: 12px;
+  position: relative;
+}
+.meter-bar {
+  position: relative;
+  height: 6px;
+  border-radius: 2px;
+  background: #0b0e12;
+  box-shadow: inset 0 0 0 1px #1d232b;
+  overflow: hidden;
+}
+.meter-fill {
+  position: absolute;
+  inset: 0;
+  clip-path: inset(0 100% 0 0);
+  will-change: clip-path;
+}
+.meter-fill.peak {
+  opacity: 0.38;
+}
+.meter-hold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: #e7eaee;
+  opacity: 0;
+}
+.meter-hold.hot {
+  background: #ff6166;
+}
+.meter.dimmed .meter-fill {
+  filter: grayscale(1) brightness(0.75);
+}
+.meter.dimmed .meter-hold {
+  background: var(--muted);
+}
+.meter-scale {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 10px;
+}
+.meter-scale span {
+  position: absolute;
+  transform: translateX(-50%);
+  font: 8.5px/10px var(--mono);
+  color: var(--muted);
+}
+.meter-scale span:first-child {
+  transform: none;
+}
+.meter-scale span:last-child {
+  transform: translateX(-100%);
+}
+
+/* Curseur de volume : la partie remplie s'arrête au niveau choisi ; repère à 100 %. */
+.volume-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.volume-slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background:
+    linear-gradient(90deg, transparent calc(50% - 1px), var(--border-strong) calc(50% - 1px) calc(50% + 1px), transparent calc(50% + 1px)),
+    linear-gradient(90deg, var(--accent) var(--fill, 50%), var(--panel-3) var(--fill, 50%));
+}
+.volume-slider::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent) var(--fill, 50%), var(--panel-3) var(--fill, 50%));
+}
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: #e7eaee;
+  border: 2px solid var(--accent-2);
+}
+.volume-slider::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e7eaee;
+  border: 2px solid var(--accent-2);
+}
+.mixer-strip.muted .volume-slider {
+  --accent: #56606d;
+}
+
+/* ---------- options des sorties ---------- */
+
+.output-options {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.segmented {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+}
+.segmented button {
+  height: 22px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.segmented button.selected {
+  background: var(--panel-3);
+  color: var(--text);
+}
+.segmented button:disabled {
+  cursor: default;
+}
+.segmented button:disabled:not(.selected) {
+  opacity: 0.45;
+}
+.encoder-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 6px;
+  row-gap: 2px;
+  min-width: 0;
+  font-size: 11.5px;
+}
+.encoder-line > span {
+  white-space: nowrap;
+}
+.encoder-line .mono {
+  font-size: 11px;
+}
+.stat.warn {
+  color: var(--warn);
 }

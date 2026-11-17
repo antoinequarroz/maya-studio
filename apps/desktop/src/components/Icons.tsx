@@ -104,3 +104,62 @@ export const IconLayers = (p: P) => (
     <path d="M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5" />
   </Svg>
 );
+export const IconCamera = (p: P) => (
+  <Svg {...p}>
+    <rect x="3" y="7" width="13" height="10" rx="2" />
+    <path d="M16 11l5-3v8l-5-3" />
+  </Svg>
+);
+export const IconScreen = (p: P) => (
+  <Svg {...p}>
+    <rect x="3" y="4" width="18" height="12" rx="2" />
+    <path d="M8 20h8M12 16v4" />
+  </Svg>
+);
+export const IconWindow = (p: P) => (
+  <Svg {...p}>
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <path d="M3 9h18M6.5 7h.01M9 7h.01" />
+  </Svg>
+);
+export const IconMic = (p: P) => (
+  <Svg {...p}>
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+  </Svg>
+);
+export const IconFilm = (p: P) => (
+  <Svg {...p}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" />
+  </Svg>
+);
+export const IconSignal = (p: P) => (
+  <Svg {...p}>
+    <path d="M12 20v-7" />
+    <circle cx="12" cy="11" r="2" />
+    <path d="M8.5 7.5a5 5 0 0 0 0 7M15.5 7.5a5 5 0 0 1 0 7M5.6 4.6a9 9 0 0 0 0 12.8M18.4 4.6a9 9 0 0 1 0 12.8" />
+  </Svg>
+);
+export const IconSpeaker = (p: P) => (
+  <Svg {...p}>
+    <path d="M4 9h4l5-4v14l-5-4H4z" />
+    <path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12" />
+  </Svg>
+);
+export const IconSpeakerOff = (p: P) => (
+  <Svg {...p}>
+    <path d="M4 9h4l5-4v14l-5-4H4z" />
+    <path d="M16 9l5 6M21 9l-5 6" />
+  </Svg>
+);
+export const IconRefresh = (p: P) => (
+  <Svg {...p}>
+    <path d="M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4" />
+  </Svg>
+);
+export const IconWave = (p: P) => (
+  <Svg {...p}>
+    <path d="M3 12h2M7 8v8M11 5v14M15 9v6M19 7v10M21 12h0" />
+  </Svg>
+);

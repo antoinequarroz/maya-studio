@@ -3,28 +3,11 @@
 import type { Scene, Source } from "@suite-media/client";
 import { useState } from "react";
 import { useStudio } from "../studio/StudioContext";
+import { KIND_LABELS, sourceSummary } from "../sourceKinds";
 import { AddSourceDialog } from "./AddSourceDialog";
-import { rgbaToCss } from "./color";
 import { ConfirmDialog } from "./Dialog";
-import { IconDown, IconEye, IconEyeOff, IconImage, IconLayers, IconPattern, IconPlus, IconTrash, IconUp } from "./Icons";
-
-export const KIND_LABELS: Record<Source["kind"], string> = {
-  color: "Couleur",
-  image: "Image",
-  test_pattern: "Mire",
-  camera: "Caméra",
-  display_capture: "Écran",
-  window_capture: "Fenêtre",
-  audio_input: "Entrée audio",
-  media_file: "Fichier vidéo",
-  srt_input: "Flux SRT",
-};
-
-function KindIcon({ source }: { source: Source }) {
-  if (source.kind === "color") return <span className="swatch" style={{ background: rgbaToCss(source.rgba) }} />;
-  if (source.kind === "image") return <IconImage />;
-  return <IconPattern />;
-}
+import { IconDown, IconEye, IconEyeOff, IconLayers, IconPlus, IconTrash, IconUp } from "./Icons";
+import { KindIcon, SourceStatusBadge } from "./SourceBits";
 
 export function SourcesPanel({
   scene,
@@ -95,7 +78,10 @@ export function SourcesPanel({
               <span className="kind-icon" title={KIND_LABELS[s.kind]}>
                 <KindIcon source={s} />
               </span>
-              <span className="list-name">{s.name}</span>
+              <span className="list-name" title={`${KIND_LABELS[s.kind]} · ${sourceSummary(s)}`}>
+                {s.name}
+              </span>
+              <SourceStatusBadge source={s} />
               <span className="row-actions">
                 <button
                   type="button"

@@ -1,10 +1,11 @@
-/** Écran principal : mode studio, scènes, sources, propriétés, sorties. */
+/** Écran principal : mode studio, scènes, sources, propriétés, audio, sorties. */
 
 import { findScene, StudioClient } from "@suite-media/client";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { lastUrl, onEngineEvent, rememberUrl, resolveStudioTarget, type StudioTarget } from "./connection";
 import { connectWatchingFatal } from "./fatal";
 import { ConnectionBanner, StatusBar, Toasts, TopBar } from "./components/Chrome";
+import { AudioMixer } from "./components/AudioMixer";
 import { Monitors } from "./components/Monitors";
 import { OutputsPanel } from "./components/OutputsPanel";
 import { PropertiesPanel } from "./components/PropertiesPanel";
@@ -95,6 +96,7 @@ function Workspace() {
           <ScenesPanel />
           <SourcesPanel scene={scene} selectedId={selectedSource} onSelect={selectSource} />
           <PropertiesPanel scene={scene} sourceId={selectedSource} />
+          <AudioMixer />
           <OutputsPanel />
         </div>
       </main>
