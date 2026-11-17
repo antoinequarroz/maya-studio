@@ -9,12 +9,69 @@ use studio_core::{Change, Compositor, Studio};
 use suite_protocol::ServerMessage;
 use tokio::sync::broadcast;
 
-use crate::outputs::{FfmpegOutput, Output, OutputKind};
+use crate::outputs::{
+    self, AudioSink, Backend, EncoderChoice, Output, OutputKind, OutputSettings, RecordFormat,
+    AUDIO_CHANNELS, DEFAULT_RECORD_BITRATE_KBPS, DEFAULT_STREAM_BITRATE_KBPS,
+};
+
+/// Réglages des sorties fixés au lancement de `studiod`.
+#[derive(Debug, Clone)]
+pub struct OutputConfig {
+    pub backend: Backend,
+    pub encoder: EncoderChoice,
+    pub record_bitrate_kbps: u32,
+    pub stream_bitrate_kbps: u32,
+}
+
+impl Default for OutputConfig {
+    fn default() -> Self {
+        Self {
+            backend: if cfg!(feature = "gstreamer") {
+                Backend::Gstreamer
+            } else {
+                Backend::Ffmpeg
+            },
+            encoder: EncoderChoice::Auto,
+            record_bitrate_kbps: DEFAULT_RECORD_BITRATE_KBPS,
+            stream_bitrate_kbps: DEFAULT_STREAM_BITRATE_KBPS,
+        }
+    }
+}
+
+/// Options d'une requête de démarrage de sortie (champs optionnels de l'API).
+#[derive(Debug, Clone, Default)]
+pub struct StartOptions {
+    pub target: Option<String>,
+    pub format: Option<RecordFormat>,
+    pub fragmented: bool,
+    pub bitrate_kbps: Option<u32>,
+}
 
 struct ActiveOutput {
     output: Box<dyn Output>,
+    /// Entrée audio : le moteur y pousse du silence calé sur les images.
+    audio: Option<Arc<dyn AudioSink>>,
     started: Instant,
+    /// Images envoyées à la sortie (y compris celles qu'elle a dû perdre).
     frames: u64,
+    format: Option<RecordFormat>,
+    bitrate_kbps: u32,
+}
+
+impl ActiveOutput {
+    fn describe(&self, kind: OutputKind, backend: Backend) -> Value {
+        let mut v = json!({
+            "output": kind,
+            "target": self.output.target(),
+            "backend": backend,
+            "encoder": self.output.encoder(),
+            "bitrate_kbps": self.bitrate_kbps,
+        });
+        if let Some(f) = self.format {
+            v["format"] = json!(f);
+        }
+        v
+    }
 }
 
 pub struct Engine {
@@ -24,10 +81,15 @@ pub struct Engine {
     events: broadcast::Sender<ServerMessage>,
     frame: Mutex<u64>,
     pub recordings_dir: std::path::PathBuf,
+    pub output_config: OutputConfig,
 }
 
 impl Engine {
-    pub fn new(studio: Studio, recordings_dir: std::path::PathBuf) -> Arc<Self> {
+    pub fn new(
+        studio: Studio,
+        recordings_dir: std::path::PathBuf,
+        output_config: OutputConfig,
+    ) -> Arc<Self> {
         let (events, _) = broadcast::channel(256);
         Arc::new(Self {
             studio: Mutex::new(studio),
@@ -36,6 +98,7 @@ impl Engine {
             events,
             frame: Mutex::new(0),
             recordings_dir,
+            output_config,
         })
     }
 
@@ -91,40 +154,86 @@ impl Engine {
         Ok(out.into_inner())
     }
 
-    pub fn start_output(&self, kind: OutputKind, target: Option<String>) -> Result<Value, String> {
+    /// Encodeurs H.264 connus et celui qui serait utilisé (requête `GetEncoders`).
+    pub fn encoders(&self) -> Value {
+        let cfg = &self.output_config;
+        #[cfg(feature = "gstreamer")]
+        let list = match cfg.backend {
+            Backend::Gstreamer => json!(crate::encoders::list(&cfg.encoder)),
+            Backend::Ffmpeg => json!([]),
+        };
+        #[cfg(not(feature = "gstreamer"))]
+        let list = json!([]);
+        let requested = match &cfg.encoder {
+            EncoderChoice::Auto => "auto".to_string(),
+            EncoderChoice::Named(n) => n.clone(),
+        };
+        json!({ "backend": cfg.backend, "requested": requested, "encoders": list })
+    }
+
+    pub fn start_output(&self, kind: OutputKind, opts: StartOptions) -> Result<Value, String> {
         let mut outputs = self.outputs.lock().unwrap();
         if outputs.contains_key(&kind) {
             return Err("output_already_active".into());
         }
-        let target = match (kind, target) {
-            (_, Some(t)) => t,
+        let bitrate_kbps = opts.bitrate_kbps.unwrap_or(match kind {
+            OutputKind::Record => self.output_config.record_bitrate_kbps,
+            OutputKind::Stream => self.output_config.stream_bitrate_kbps,
+        });
+        if !(100..=100_000).contains(&bitrate_kbps) {
+            return Err("invalid_bitrate".into());
+        }
+        let (target, format) = match (kind, opts.target) {
+            (OutputKind::Record, Some(t)) => {
+                let format = opts.format.unwrap_or_else(|| RecordFormat::from_path(&t));
+                (t, Some(format))
+            }
             (OutputKind::Record, None) => {
+                let format = opts.format.unwrap_or_default();
                 std::fs::create_dir_all(&self.recordings_dir).map_err(|e| e.to_string())?;
                 let ts = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_secs();
-                self.recordings_dir
-                    .join(format!("enregistrement-{ts}.mp4"))
+                let path = self
+                    .recordings_dir
+                    .join(format!("enregistrement-{ts}.{}", format.extension()))
                     .to_string_lossy()
-                    .into_owned()
+                    .into_owned();
+                (path, Some(format))
+            }
+            (OutputKind::Stream, Some(t)) => {
+                if outputs::StreamProtocol::from_url(&t).is_none() {
+                    return Err("unsupported_url".into());
+                }
+                (t, None)
             }
             (OutputKind::Stream, None) => return Err("missing_url".into()),
         };
         let canvas = self.studio.lock().unwrap().canvas;
-        let output =
-            FfmpegOutput::start(kind, canvas, &target).map_err(|e| format!("ffmpeg: {e}"))?;
-        outputs.insert(
+        let settings = OutputSettings {
             kind,
-            ActiveOutput {
-                output: Box::new(output),
-                started: Instant::now(),
-                frames: 0,
-            },
-        );
+            canvas,
+            target,
+            format: format.unwrap_or_default(),
+            fragmented: opts.fragmented,
+            bitrate_kbps,
+            encoder: self.output_config.encoder.clone(),
+        };
+        let output = outputs::start(self.output_config.backend, &settings)?;
+        let active = ActiveOutput {
+            audio: output.audio_sink(),
+            output,
+            started: Instant::now(),
+            frames: 0,
+            format,
+            bitrate_kbps,
+        };
+        let data = active.describe(kind, self.output_config.backend);
+        outputs.insert(kind, active);
         drop(outputs);
-        self.emit("OutputStarted", json!({ "output": kind, "target": target }));
-        Ok(json!({ "output": kind, "target": target }))
+        self.emit("OutputStarted", data.clone());
+        Ok(data)
     }
 
     pub fn stop_output(&self, kind: OutputKind) -> Result<Value, String> {
@@ -134,28 +243,39 @@ impl Engine {
             .unwrap()
             .remove(&kind)
             .ok_or("output_not_active")?;
-        let target = active.output.target().to_string();
-        let frames = active.frames;
-        let duration = active.started.elapsed().as_secs_f64();
-        active.output.stop();
-        let data =
-            json!({ "output": kind, "target": target, "frames": frames, "duration_s": duration });
+        let mut data = active.describe(kind, self.output_config.backend);
+        data["frames"] = json!(active.frames);
+        data["dropped_frames"] = json!(active.output.dropped_frames());
+        data["duration_s"] = json!(active.started.elapsed().as_secs_f64());
+        let finalized = active.output.stop();
+        data["finalized"] = json!(finalized.is_ok());
+        if let Err(e) = finalized {
+            tracing::warn!(?kind, error = %e, "arrêt incomplet de la sortie");
+            data["warning"] = json!(e);
+        }
         self.emit("OutputStopped", data.clone());
         Ok(data)
     }
 
     pub fn output_status(&self) -> Value {
         let outputs = self.outputs.lock().unwrap();
+        let backend = self.output_config.backend;
         let status = |k: OutputKind| match outputs.get(&k) {
-            Some(a) => json!({
-                "active": true,
-                "target": a.output.target(),
-                "frames": a.frames,
-                "duration_s": a.started.elapsed().as_secs_f64(),
-            }),
+            Some(a) => {
+                let mut v = a.describe(k, backend);
+                v["active"] = json!(true);
+                v["frames"] = json!(a.frames);
+                v["dropped_frames"] = json!(a.output.dropped_frames());
+                v["duration_s"] = json!(a.started.elapsed().as_secs_f64());
+                v
+            }
             None => json!({ "active": false }),
         };
-        json!({ "record": status(OutputKind::Record), "stream": status(OutputKind::Stream) })
+        json!({
+            "backend": backend,
+            "record": status(OutputKind::Record),
+            "stream": status(OutputKind::Stream),
+        })
     }
 
     pub fn has_active_outputs(&self) -> bool {
@@ -169,6 +289,7 @@ impl Engine {
             .name("render".into())
             .spawn(move || {
                 let mut buf = Vec::new();
+                let mut silence: Vec<i16> = Vec::new();
                 let mut next = Instant::now();
                 loop {
                     let (canvas, scene) = {
@@ -191,9 +312,21 @@ impl Engine {
                         {
                             let mut outputs = engine.outputs.lock().unwrap();
                             for (kind, active) in outputs.iter_mut() {
-                                match active.output.push_frame(&buf) {
-                                    Ok(()) => active.frames += 1,
-                                    Err(e) => failed.push((*kind, e.to_string())),
+                                let n = active.frames;
+                                if let Err(e) = active.output.push_frame(&buf) {
+                                    failed.push((*kind, e.to_string()));
+                                    continue;
+                                }
+                                active.frames += 1;
+                                // Silence calé sur l'horodatage de cette image ; le mixeur
+                                // audio poussera ici le vrai son.
+                                if let Some(audio) = &active.audio {
+                                    let samples = outputs::audio_samples_for_frame(n, canvas.fps)
+                                        * AUDIO_CHANNELS as usize;
+                                    silence.resize(samples, 0);
+                                    if let Err(e) = audio.push_audio(&silence[..samples]) {
+                                        failed.push((*kind, e.to_string()));
+                                    }
                                 }
                             }
                         }

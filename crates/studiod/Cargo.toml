@@ -18,3 +18,18 @@ tracing-subscriber.workspace = true
 image.workspace = true
 base64.workspace = true
 clap.workspace = true
+gstreamer = { workspace = true, optional = true }
+gstreamer-app = { workspace = true, optional = true }
+gstreamer-video = { workspace = true, optional = true }
+
+[features]
+default = ["gstreamer"]
+# Backend de sortie GStreamer in-process (LGPL). Sans lui, seul le backend ffmpeg provisoire reste.
+gstreamer = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "studiod"
+path = "src/main.rs"
