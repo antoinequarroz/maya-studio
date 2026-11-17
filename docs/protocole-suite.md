@@ -32,7 +32,8 @@ Le code de référence est le crate Rust `crates/suite-protocol`. Toute app de l
 ```
 serveur → {"op":"hello","app":{"id":"studio","name":"Maya Studio","version":"0.1.0"},
            "protocol":1,"auth_required":true,
-           "capabilities":["core","studio.scenes","studio.sources","studio.outputs","studio.encoders","studio.preview"]}
+           "capabilities":["core","studio.scenes","studio.sources","studio.outputs","studio.encoders","studio.preview",
+                           "studio.inputs","studio.audio"]}
 
 client  → {"op":"identify","token":"…","name":"Nino plateau 1",
            "app":{"id":"nino","name":"Nino","version":"0.3.0"},"events":true}
@@ -127,17 +128,51 @@ traiter dans une seule boucle.
 | Requête | Données |
 |---|---|
 | `AddSource` | `scene`, `name`, `kind` + réglages, `transform` optionnel |
-| `UpdateSource` | `scene`, `source`, puis au choix `name`, `visible`, `transform`, `kind` + réglages |
+| `UpdateSource` | `scene`, `source`, puis au choix `name`, `visible`, `transform`, `volume`, `muted`, `kind` + réglages |
 | `RemoveSource` | `scene`, `source` |
 | `MoveSource` | `scene`, `source`, `index` (0 = tout en dessous) |
 
-Types de sources (`kind`) : `color` (`rgba`), `image` (`path`), `test_pattern`.
-À venir avec GStreamer : `camera`, `display_capture`, `window_capture`, `audio_input`,
-`media_file`, `srt_input`, `ndi_input`, `browser`.
+Types de sources (`kind`) et leurs réglages :
+
+| `kind` | Réglages | Image | Son |
+|---|---|---|---|
+| `color` | `rgba` | ✓ | |
+| `image` | `path` (PNG ou JPEG) | ✓ | |
+| `test_pattern` | — | ✓ | |
+| `camera` | `device_id`, `width`, `height`, `fps` (tous optionnels) | ✓ | |
+| `display_capture` | `display_id` optionnel (index d'écran ; sous X11 numéro d'écran ou nom d'affichage) | ✓ | |
+| `window_capture` | `window_id` (XID sous X11, HWND sous Windows ; non disponible sous macOS) | ✓ | |
+| `audio_input` | `device_id` optionnel | | ✓ |
+| `media_file` | `path` (chemin local ou URI), `loop` (faux par défaut) | ✓ | ✓ |
+| `srt_input` | `url` (`srt://hôte:port`, `?mode=listener` pour attendre l'émetteur) | ✓ | ✓ |
+
+À venir : `ndi_input`, `browser`.
+
+- `device_id` : identifiant renvoyé par `GetInputDevices`. Sans `device_id`, le
+  périphérique par défaut de la plateforme. Un identifiant inconnu est essayé comme
+  chemin ou index pour l'élément de la plateforme (par exemple `/dev/video2` sous Linux).
+- `width` / `height` / `fps` d'une caméra : mode souhaité ; l'image est mise à l'échelle
+  si la caméra ne le propose pas.
+- Une image de capture est étirée dans le rectangle `transform` (sans conserver le
+  rapport largeur / hauteur : c'est au client de choisir un rectangle adapté).
+- Les sources de capture tournent dès qu'elles sont dans **une** scène, même hors
+  antenne : passer une scène à l'antenne est instantané.
+- `media_file` est lu en temps réel. Sans `loop`, la dernière image reste affichée à la fin.
+
+Chaque source porte aussi `volume` (gain linéaire de 0 à 2, 1 par défaut) et `muted`
+(faux par défaut), voir `studio.audio`.
 
 `transform` : `x`, `y`, `width`, `height` en pixels du canvas, `opacity` de 0 à 1.
 
-Événements : `SourceAdded`, `SourceUpdated`, `SourceRemoved`, `SourceReordered`.
+Événements : `SourceAdded`, `SourceUpdated`, `SourceRemoved`, `SourceReordered`, et pour
+les sources de capture :
+
+- `SourceStarted` : `source_id`, `kind` — le pipeline de capture tourne (aussi après
+  une reprise) ;
+- `SourceFailed` : `source_id`, `kind`, `error`, `retry_in_ms` — la capture a échoué
+  (périphérique absent ou débranché, fichier illisible, flux SRT coupé) ; elle est
+  relancée automatiquement après `retry_in_ms` (de 1 s à 30 s, délai doublé à chaque
+  échec). La source ne dessine rien pendant la panne.
 
 ### `studio.outputs`
 
@@ -149,7 +184,8 @@ Types de sources (`kind`) : `color` (`rgba`), `image` (`path`), `test_pattern`.
 | `StopStream` | — |
 | `GetOutputStatus` | — |
 
-Chaque sortie porte une piste vidéo H.264 et une piste audio AAC 48 kHz stéréo.
+Chaque sortie porte une piste vidéo H.264 et une piste audio AAC 48 kHz stéréo (le mix
+des sources audio, voir `studio.audio`).
 Conteneurs : MP4 ou Matroska pour l'enregistrement, FLV pour RTMP(S), MPEG-TS pour SRT.
 
 Réponse de `StartRecording` / `StartStream` et données de `OutputStarted` :
@@ -210,6 +246,56 @@ choisi automatiquement).
 ```
 
 Avec le backend `ffmpeg`, la liste est vide.
+
+### `studio.inputs`
+
+| Requête | Données | Réponse |
+|---|---|---|
+| `GetInputDevices` | — | `video`, `audio` : périphériques d'entrée présents |
+
+Chaque entrée : `id` (à passer en `device_id`), `name`, `caps_summary` (résumé lisible des
+formats). Les listes peuvent être vides (aucun périphérique, ou pas de fournisseur de
+périphériques sur la machine) : ce n'est pas une erreur.
+
+```json
+{"video":[{"id":"/dev/video0","name":"Integrated Camera",
+           "caps_summary":"video/x-raw (YUY2), image/jpeg · jusqu'à 1920x1080"}],
+ "audio":[{"id":"alsa_input.usb-Focusrite-00","name":"Scarlett 2i2",
+           "caps_summary":"audio/x-raw (S32LE) · 2 canaux · 48000 Hz"}]}
+```
+
+### `studio.audio`
+
+| Requête | Données |
+|---|---|
+| `SetSourceVolume` | `scene`, `source`, `volume` (gain linéaire de 0 à 2 ; 1 = inchangé, 2 ≈ +6 dB) |
+| `SetSourceMuted` | `scene`, `source`, `muted` |
+
+Le mixeur somme, par blocs de 10 ms, les sources qui ont du son (`audio_input`,
+`media_file`, `srt_input`) de la **scène programme**, visibles et non coupées, chacune avec
+son volume, puis écrête le résultat. Ce mix part dans la piste AAC de chaque sortie active
+(du silence s'il n'y a aucune source). L'audio est horodaté sur la même horloge que la
+vidéo de la sortie : chaque bloc est placé par rapport à la position de la dernière image
+envoyée, ce qui garde les deux pistes calées même si le rendu prend du retard.
+
+Codes d'erreur : `invalid_volume` (hors de 0..2), `scene_not_found`, `source_not_found`.
+
+Événements :
+
+- `SourceVolumeChanged` : `scene_id`, `source_id`, `volume` ;
+- `SourceMuteChanged` : `scene_id`, `source_id`, `muted` ;
+- `InputLevels` (environ 10 fois par seconde, seulement s'il y a des sources audio) :
+  niveaux sur les 100 dernières ms, après le volume, en dBFS par canal (gauche, droite),
+  arrondis au dixième, plancher à -100 pour le silence. `muted` et `audible` (la source
+  part dans le mix) permettent d'afficher un VU-mètre grisé.
+
+```json
+{"sources":[{"source_id":"…","peak_db":[-6.1,-6.0],"rms_db":[-9.1,-9.0],
+             "muted":false,"audible":true}]}
+```
+
+Un client qui n'affiche pas de VU-mètres peut ignorer `InputLevels` (ou s'identifier avec
+`events: false` s'il n'a besoin d'aucun événement).
 
 ### `studio.preview`
 

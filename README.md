@@ -10,7 +10,13 @@ via le [protocole commun de la suite](docs/protocole-suite.md).
 Fonctionne déjà :
 
 - modèle de scènes et de sources, mode studio (aperçu / programme, coupe) ;
-- compositeur logiciel de référence (couleur, image, mire animée, position, opacité) ;
+- compositeur logiciel de référence (couleur, image, mire animée, images de capture mises à
+  l'échelle, position, opacité) ;
+- vraies sources par GStreamer : caméras, capture d'écran et de fenêtre, entrées audio,
+  fichiers média (en boucle ou non), SRT entrant, avec découverte des périphériques
+  (`GetInputDevices`) et relance automatique d'une capture en échec ;
+- mixeur audio (volume, mute, écrêtage) poussé dans les sorties, calé sur la vidéo, et
+  VU-mètres (`InputLevels`, crête et RMS en dBFS) ;
 - rendu programme en continu à la cadence du canvas (30 i/s en 1280×720 en build release) ;
 - enregistrement MP4 / MKV et diffusion RTMP(S) / SRT en H.264 + AAC, avec un backend
   GStreamer in-process (LGPL) qui choisit l'encodeur matériel disponible
@@ -20,8 +26,9 @@ Fonctionne déjà :
 
 Prochaines étapes (voir le projet Linear « Media · Maya Studio ») :
 
-1. Vraies sources : caméras, capture d'écran et de fenêtre, micros, fichiers média, SRT/NDI entrants.
-2. Audio : mixage (poussé dans l'entrée audio des sorties, aujourd'hui du silence), VU-mètres.
+1. Sources NDI et navigateur ; capture de fenêtre sous macOS (ScreenCaptureKit).
+2. Audio : filtres (gain, noise gate, compresseur), moniteur casque, compensation de dérive
+   d'horloge des interfaces audio.
 3. Compositeur GPU wgpu (DirectX 12 / Metal / Vulkan).
 4. Interface desktop Tauri + React (Windows, macOS).
 5. Découverte mDNS des apps de la suite.
@@ -35,6 +42,10 @@ crates/
   studiod/          moteur sans interface : boucle de rendu, sorties, serveur WebSocket
     src/outputs/    trait Output, backend GStreamer (gst.rs) et backend ffmpeg provisoire
     src/encoders.rs choix des encodeurs H.264 / AAC à l'exécution
+    src/captures.rs pipelines de capture (caméra, écran, fenêtre, micro, fichier, SRT)
+    src/devices.rs  découverte des périphériques (gst::DeviceMonitor)
+    src/media.rs    dernières images et files audio des sources (sans GStreamer)
+    src/mixer.rs    calculs du mixeur audio (somme, volume, écrêtage, dBFS, calage A/V)
 tools/
   demo-client.mjs   client de démo (fait ce que Nino fera)
 docs/
@@ -90,6 +101,8 @@ cargo run --release -p studiod -- --token monjeton
 node tools/demo-client.mjs ws://127.0.0.1:4460 monjeton
 # enregistrement MKV et diffusion SRT en même temps :
 node tools/demo-client.mjs ws://127.0.0.1:4460 monjeton mkv "srt://127.0.0.1:9000"
+# avec un fichier vidéo en incrustation (et son son dans l'enregistrement) :
+node tools/demo-client.mjs ws://127.0.0.1:4460 monjeton --media ~/Vidéos/clip.mp4
 ```
 
 Options de `studiod` : `--listen 127.0.0.1:4460`, `--token` (ou `STUDIO_TOKEN`),
@@ -124,8 +137,34 @@ toutes les 2 s, pas d'images B, mode faible latence.
   MP4 fragmenté qui reste lisible après un plantage). À l'arrêt, `studiod` envoie la fin de
   flux et attend jusqu'à 5 s que le fichier soit finalisé.
 - Diffusion : `rtmp://` et `rtmps://` (FLV, `rtmp2sink`), `srt://` (MPEG-TS, `srtsink`).
-- Audio : piste AAC 48 kHz stéréo (silence pour l'instant), encodeur `avenc_aac`, sinon
-  `voaacenc`, sinon `fdkaacenc`.
+- Audio : piste AAC 48 kHz stéréo (le mix des sources audio, du silence s'il n'y en a pas),
+  encodeur `avenc_aac`, sinon `voaacenc`, sinon `fdkaacenc`.
+
+### Sources de capture
+
+Chaque source de capture présente dans une scène a son propre pipeline GStreamer, lancé à
+l'ajout et arrêté quand la source n'est plus dans aucune scène. Les éléments sont choisis à
+l'exécution selon la plateforme (le même binaire fonctionne avec ou sans les plugins) :
+
+| Source | macOS | Windows | Linux |
+|---|---|---|---|
+| `camera` | `avfvideosrc` | `mfvideosrc`, `ksvideosrc` | `v4l2src` |
+| `display_capture` | `avfvideosrc capture-screen=true` | `d3d11screencapturesrc` | `ximagesrc` (X11), `pipewiresrc` (Wayland) |
+| `window_capture` | — | `d3d11screencapturesrc window-handle` | `ximagesrc xid` |
+| `audio_input` | `osxaudiosrc` | `wasapi2src`, `wasapisrc` | `pulsesrc`, `pipewiresrc`, `alsasrc` |
+| `media_file` | `uridecodebin` | `uridecodebin` | `uridecodebin` |
+| `srt_input` | `srtsrc ! decodebin` | `srtsrc ! decodebin` | `srtsrc ! decodebin` |
+
+Avec un `device_id` issu de `GetInputDevices`, l'élément est créé par le périphérique
+lui-même (`gst::Device::create_element`). Une capture qui échoue (caméra débranchée, pas
+d'accès à l'écran, flux SRT coupé) émet `SourceFailed` et est relancée de 1 s à 30 s plus
+tard. Sous macOS, la caméra, le micro et l'écran demandent l'autorisation de l'utilisateur
+(Réglages système → Confidentialité) ; sous Wayland, la capture d'écran passe par PipeWire
+et le portail de bureau.
+
+Limite connue : le son des interfaces audio n'est pas rééchantillonné pour suivre la dérive
+de leur horloge ; la file de chaque source est bornée à 200 ms, un écart se traduit par un
+petit saut audio de temps en temps sur de longues sessions.
 
 Tester la diffusion SRT en local :
 

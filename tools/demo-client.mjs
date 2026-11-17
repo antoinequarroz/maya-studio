@@ -3,14 +3,32 @@
 // enregistrer quelques secondes et récupérer une capture d'écran.
 //
 // Usage : node tools/demo-client.mjs [ws://127.0.0.1:4460] [jeton] [mp4|mkv] [url-de-diffusion]
+//                                    [--media chemin/vers/clip.mp4]
 //   ex. : node tools/demo-client.mjs ws://127.0.0.1:4460 "" mp4 "srt://127.0.0.1:9000"
+//   --media ajoute le fichier en source media_file (en boucle, image et son) et affiche
+//   les VU-mètres (événements InputLevels).
 
 import { writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 
-const url = process.argv[2] ?? "ws://127.0.0.1:4460";
-const token = process.argv[3] || undefined;
-const format = process.argv[4] || "mp4";
-const streamUrl = process.argv[5];
+const args = process.argv.slice(2);
+let mediaPath;
+const mediaFlag = args.findIndex((a) => a === "--media" || a.startsWith("--media="));
+if (mediaFlag >= 0) {
+  const [flag] = args.splice(mediaFlag, 1);
+  mediaPath = flag.includes("=") ? flag.slice(flag.indexOf("=") + 1) : args.splice(mediaFlag, 1)[0];
+  if (!mediaPath) {
+    console.error("--media attend un chemin de fichier");
+    process.exit(2);
+  }
+  // Le chemin est résolu par studiod : on lui passe un chemin absolu.
+  mediaPath = resolve(mediaPath);
+}
+const url = args[0] ?? "ws://127.0.0.1:4460";
+const token = args[1] || undefined;
+const format = args[2] || "mp4";
+const streamUrl = args[3];
+let lastLevels = 0;
 const ws = new WebSocket(url);
 const pending = new Map();
 let nextId = 1;
@@ -37,8 +55,17 @@ ws.onmessage = async (e) => {
       console.error("échec :", err.message);
       process.exit(1);
     });
+  } else if (msg.op === "event" && msg.type === "InputLevels") {
+    // ~10 par seconde : on n'en affiche qu'un par seconde.
+    if (Date.now() - lastLevels < 1000) return;
+    lastLevels = Date.now();
+    for (const s of msg.data.sources) {
+      const state = s.muted ? " (coupé)" : s.audible ? "" : " (hors antenne)";
+      console.log(`  ♪ niveau ${s.source_id.slice(0, 8)} : crête ${s.peak_db.join(" / ")} dBFS, RMS ${s.rms_db.join(" / ")} dBFS${state}`);
+    }
   } else if (msg.op === "event") {
-    console.log(`  ⚡ événement ${msg.app}.${msg.type}`);
+    const detail = msg.type === "SourceFailed" ? ` : ${msg.data.error} (nouvel essai dans ${msg.data.retry_in_ms} ms)` : "";
+    console.log(`  ⚡ événement ${msg.app}.${msg.type}${detail}`);
   } else if (msg.op === "response") {
     const p = pending.get(msg.id);
     if (!p) return console.error("réponse sans requête :", msg);
@@ -58,12 +85,26 @@ async function run() {
     console.log(`  ${e.selected ? "→" : " "} ${e.name} (${tags.join(", ")})`);
   }
 
+  const devices = await request("GetInputDevices");
+  console.log(`périphériques : ${devices.video.length} vidéo, ${devices.audio.length} audio`);
+  for (const d of [...devices.video, ...devices.audio]) {
+    console.log(`  ${d.name} [${d.id}] ${d.caps_summary}`);
+  }
+
   await request("CreateScene", { name: "Plateau" });
   await request("AddSource", { scene: "Plateau", name: "Fond", kind: "color", rgba: [20, 30, 60, 255] });
   await request("AddSource", {
     scene: "Plateau", name: "Incrustation", kind: "test_pattern",
     transform: { x: 760, y: 40, width: 480, height: 270 },
   });
+  if (mediaPath) {
+    await request("AddSource", {
+      scene: "Plateau", name: "Clip", kind: "media_file", path: mediaPath, loop: true,
+      transform: { x: 40, y: 40, width: 640, height: 360 },
+    });
+    await request("SetSourceVolume", { scene: "Plateau", source: "Clip", volume: 0.8 });
+    console.log(`fichier média : ${mediaPath}`);
+  }
   await request("AddSource", {
     scene: "Plateau", name: "Bandeau", kind: "color", rgba: [200, 30, 40, 255],
     transform: { x: 0, y: 600, width: 1280, height: 80, opacity: 0.85 },
@@ -82,7 +123,14 @@ async function run() {
   await sleep(1500);
 
   await request("UpdateSource", { scene: "Plateau", source: "Bandeau", visible: false });
-  await sleep(1000);
+  if (mediaPath) {
+    await request("SetSourceMuted", { scene: "Plateau", source: "Clip", muted: true });
+    await sleep(500);
+    await request("SetSourceMuted", { scene: "Plateau", source: "Clip", muted: false });
+    await sleep(500);
+  } else {
+    await sleep(1000);
+  }
 
   const status = await request("GetOutputStatus");
   console.log(`statut : ${status.record.frames} images, ${status.record.dropped_frames} perdues`);
