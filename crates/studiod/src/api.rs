@@ -155,6 +155,7 @@ fn output_err(code: String) -> ApiError {
             "URL non prise en charge : rtmp://, rtmps:// ou srt:// attendu".to_string()
         }
         "invalid_bitrate" => "débit vidéo invalide : entre 100 et 100000 kbit/s".to_string(),
+        "shutting_down" => "studiod s'arrête : aucune sortie ne peut démarrer".to_string(),
         other => return ("output_error".into(), other.to_string()),
     };
     (code, message)
@@ -249,12 +250,6 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
             index,
         } => studio().move_source(&scene, &source, index),
         SetCanvas { width, height, fps } => {
-            if engine.has_active_outputs() {
-                return Err((
-                    "outputs_active".into(),
-                    "arrête les sorties avant de changer le canvas".into(),
-                ));
-            }
             if width == 0
                 || height == 0
                 || width % 2 == 1
@@ -268,7 +263,13 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
                 ));
             }
             let canvas = Canvas { width, height, fps };
-            studio().canvas = canvas;
+            // Vérification des sorties et écriture atomiques (voir Engine::set_canvas).
+            engine.set_canvas(canvas).map_err(|code| {
+                (
+                    code,
+                    "arrête les sorties avant de changer le canvas".to_string(),
+                )
+            })?;
             engine.emit("CanvasChanged", json!(canvas));
             return Ok(json!(canvas));
         }

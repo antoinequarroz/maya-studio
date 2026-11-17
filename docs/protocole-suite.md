@@ -173,14 +173,23 @@ problème, `warning`.
 ```
 
 `dropped_frames` compte les images perdues parce que l'encodeur ou le réseau ne suivait pas :
-la boucle de rendu n'attend jamais une sortie.
+la boucle de rendu n'attend jamais une sortie. Une sortie en cours de démarrage (pipeline
+en construction) apparaît avec `"active":false,"starting":true`.
 
-Codes d'erreur : `output_already_active`, `output_not_active`, `missing_url`,
-`unsupported_url`, `invalid_bitrate`, `output_error` (détail dans `message`, par exemple
-encodeur introuvable).
+Codes d'erreur : `output_already_active` (sortie active ou en démarrage), `output_not_active`,
+`missing_url`, `unsupported_url`, `invalid_bitrate`, `shutting_down` (studiod est en train de
+s'arrêter), `output_error` (détail dans `message`, par exemple encodeur introuvable).
 
 Événements : `OutputStarted`, `OutputStopped`, `OutputFailed` (`output`, `error` : la sortie
-s'est arrêtée seule, par exemple connexion RTMP refusée ou disque plein).
+s'est arrêtée seule, par exemple connexion RTMP refusée, connexion SRT refusée ou perdue,
+disque plein). En SRT, la reconnexion automatique de `srtsink` est désactivée : une
+connexion perdue arrête la sortie avec `OutputFailed` au lieu de la laisser « active » sans
+rien envoyer ; c'est au client de relancer `StartStream`.
+
+`SetCanvas` est refusé (`outputs_active`) tant qu'une sortie est active ou en démarrage.
+
+À la réception de SIGINT (Ctrl-C) ou SIGTERM, `studiod` arrête proprement toutes les sorties
+(EOS, finalisation des MP4) avant de quitter.
 
 ### `studio.encoders`
 

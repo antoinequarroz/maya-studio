@@ -81,7 +81,55 @@ async fn main() -> std::io::Result<()> {
 
     let engine = engine::Engine::new(studio, args.recordings, output_config);
     engine.spawn_render_loop();
-    server::serve(engine, &args.listen, args.token).await
+    let result = tokio::select! {
+        r = server::serve(std::sync::Arc::clone(&engine), &args.listen, args.token) => r,
+        signal = shutdown_signal() => {
+            tracing::info!(%signal, "arrêt demandé, finalisation des sorties");
+            Ok(())
+        }
+    };
+    // Sans cela, un MP4 non fragmenté en cours resterait illisible (atome moov absent).
+    let stopped = tokio::task::spawn_blocking(move || engine.shutdown_outputs())
+        .await
+        .unwrap_or_default();
+    for data in &stopped {
+        tracing::info!(
+            output = %data["output"],
+            finalized = %data["finalized"],
+            "sortie arrêtée à la fermeture"
+        );
+    }
+    result
+}
+
+/// Attend SIGINT (Ctrl-C) ou, sous Unix, SIGTERM ; renvoie le nom du signal reçu.
+async fn shutdown_signal() -> &'static str {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::error!(error = %e, "écoute de Ctrl-C impossible");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => tokio::select! {
+                _ = ctrl_c => "SIGINT",
+                _ = term.recv() => "SIGTERM",
+            },
+            Err(e) => {
+                tracing::error!(error = %e, "écoute de SIGTERM impossible");
+                ctrl_c.await;
+                "SIGINT"
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await;
+        "Ctrl-C"
+    }
 }
 
 /// Vérifie dès le lancement que le backend et l'encodeur demandés sont utilisables.

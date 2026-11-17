@@ -332,7 +332,14 @@ impl GstOutput {
         match plan.sink {
             SinkKind::File => sink.set_property("location", &settings.target),
             SinkKind::Rtmp => sink.set_property("location", &settings.target),
-            SinkKind::Srt => sink.set_property("uri", &settings.target),
+            SinkKind::Srt => {
+                sink.set_property("uri", &settings.target);
+                // Avec la reconnexion automatique (par défaut), srtsink ne poste que des
+                // avertissements quand la connexion est refusée ou perdue : la sortie
+                // resterait « active » sans rien envoyer. Sans elle, l'échec devient une
+                // erreur sur le bus, donc un OutputFailed.
+                encoders::set_if_exists(&sink, "auto-reconnect", &PropValue::Bool(false));
+            }
         }
 
         let bus_state = Arc::new(BusState::default());
