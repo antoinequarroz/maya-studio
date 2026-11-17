@@ -13,7 +13,18 @@ const KINDS: Array<{ kind: SourceKindName; label: string; hint: string; icon: ty
   { kind: "test_pattern", label: "Mire", hint: "Mire animée", icon: IconPattern },
 ];
 
-const DEFAULT_NAMES: Record<SourceKindName, string> = { color: "Couleur", image: "Image", test_pattern: "Mire" };
+// Types de capture : pas encore proposés par ce dialogue, noms prévus pour plus tard.
+const DEFAULT_NAMES: Record<SourceKindName, string> = {
+  color: "Couleur",
+  image: "Image",
+  test_pattern: "Mire",
+  camera: "Caméra",
+  display_capture: "Écran",
+  window_capture: "Fenêtre",
+  audio_input: "Micro",
+  media_file: "Vidéo",
+  srt_input: "SRT",
+};
 
 export function AddSourceDialog({
   sceneId,

@@ -4,7 +4,8 @@
  *
  * Binaire utilisé : `STUDIOD_BIN` s'il est défini, sinon
  * `$CARGO_TARGET_DIR/debug/studiod` (ou `target/debug/studiod`), compilé avec
- * `cargo build -p studiod` s'il manque. L'enregistrement demande `ffmpeg` (backend provisoire).
+ * `cargo build -p studiod` s'il manque. L'enregistrement demande GStreamer et un encodeur
+ * H.264 (choix automatique du moteur).
  */
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
@@ -152,10 +153,12 @@ describe("studiod réel", () => {
 
     const path = join(recordings, "test.mp4");
     const started = await studio.call("StartRecording", { path });
-    expect(started).toEqual({ output: "record", target: path });
+    expect(started).toMatchObject({ output: "record", target: path, backend: "gstreamer", format: "mp4" });
+    expect(started.encoder).toMatch(/\w+/);
     await sleep(1200);
     const status = await studio.call("GetOutputStatus");
     expect(status.record.active).toBe(true);
+    expect(status.record.encoder).toBe(started.encoder);
     expect(status.stream.active).toBe(false);
     const again = await studio.call("StartRecording", { path }).catch((e: unknown) => e);
     expect(isSuiteError(again, "output_already_active")).toBe(true);
@@ -167,6 +170,62 @@ describe("studiod réel", () => {
     expect(stop.duration_s).toBeGreaterThan(1);
     expect(statSync(path).size).toBeGreaterThan(1000);
 
+    studio.close();
+  });
+
+  it("encodeurs, périphériques, captures et mixeur", async () => {
+    const studio = newClient();
+    await studio.connect();
+    for (const cap of ["studio.encoders", "studio.inputs", "studio.audio"]) expect(studio.hasCapability(cap)).toBe(true);
+
+    const enc = await studio.call("GetEncoders");
+    expect(enc.backend).toBe("gstreamer");
+    expect(enc.requested).toBe("auto");
+    expect(enc.encoders.filter((e) => e.selected).length).toBeLessThanOrEqual(1);
+    const devices = await studio.call("GetInputDevices");
+    expect(Array.isArray(devices.video) && Array.isArray(devices.audio)).toBe(true);
+
+    let state: StudioState = await studio.call("GetStudio");
+    studio.subscribe("*", (data, ev) => (state = applyStudioEvent(state, ev.type, data)));
+    // Fichier absent : la capture échoue et le moteur le signale (puis réessaie).
+    const failed = studio.waitForEvent<{ source_id: string; kind: string; error: string; retry_in_ms: number }>(
+      "studio",
+      "SourceFailed",
+    );
+    const { source } = await studio.call("AddSource", {
+      scene: "Scène 1",
+      name: "Clip absent",
+      kind: "media_file",
+      path: join(recordings, "absent.mp4"),
+      loop: true,
+    });
+    expect(source).toMatchObject({ kind: "media_file", loop: true, volume: 1, muted: false });
+    const failure = await failed;
+    expect(failure).toMatchObject({ source_id: source.id, kind: "media_file" });
+    expect(failure.retry_in_ms).toBeGreaterThanOrEqual(1000);
+    expect(failure.error.length).toBeGreaterThan(0);
+
+    const vol = studio.waitForEvent("studio", "SourceVolumeChanged");
+    expect(await studio.call("SetSourceVolume", { scene: "Scène 1", source: source.id, volume: 1.5 })).toMatchObject({
+      source_id: source.id,
+      volume: 1.5,
+    });
+    await vol;
+    await studio.call("SetSourceMuted", { scene: "Scène 1", source: "Clip absent", muted: true });
+    const tooLoud = await studio
+      .call("SetSourceVolume", { scene: "Scène 1", source: source.id, volume: 3 })
+      .catch((e: unknown) => e);
+    expect(isSuiteError(tooLoud, "invalid_volume")).toBe(true);
+    await sleep(100);
+    expect(state).toEqual(await studio.call("GetStudio"));
+    await studio.call("RemoveSource", { scene: "Scène 1", source: source.id });
+
+    const mkv = await studio.call("StartRecording", { format: "mkv", bitrate_kbps: 2000 });
+    expect(mkv).toMatchObject({ format: "mkv", bitrate_kbps: 2000 });
+    expect(mkv.target.endsWith(".mkv")).toBe(true);
+    await sleep(500);
+    const stop = await studio.call("StopRecording");
+    expect(stop.finalized).toBe(true);
     studio.close();
   });
 

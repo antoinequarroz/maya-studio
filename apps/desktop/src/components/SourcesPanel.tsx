@@ -8,7 +8,17 @@ import { rgbaToCss } from "./color";
 import { ConfirmDialog } from "./Dialog";
 import { IconDown, IconEye, IconEyeOff, IconImage, IconLayers, IconPattern, IconPlus, IconTrash, IconUp } from "./Icons";
 
-export const KIND_LABELS: Record<Source["kind"], string> = { color: "Couleur", image: "Image", test_pattern: "Mire" };
+export const KIND_LABELS: Record<Source["kind"], string> = {
+  color: "Couleur",
+  image: "Image",
+  test_pattern: "Mire",
+  camera: "Caméra",
+  display_capture: "Écran",
+  window_capture: "Fenêtre",
+  audio_input: "Entrée audio",
+  media_file: "Fichier vidéo",
+  srt_input: "Flux SRT",
+};
 
 function KindIcon({ source }: { source: Source }) {
   if (source.kind === "color") return <span className="swatch" style={{ background: rgbaToCss(source.rgba) }} />;
