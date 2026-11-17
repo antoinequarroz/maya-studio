@@ -19,6 +19,19 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// Tue le processus `studiod` si le test s'arrête avant lui (assertion ratée) :
+/// sans cela, un échec laisse un moteur orphelin qui tourne indéfiniment.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Ok(None) = self.0.try_wait() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
 async fn connect(
     addr: &str,
 ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
@@ -72,7 +85,8 @@ async fn run_stop_test(stop: Stop) {
     if let Stop::StdinEof = stop {
         cmd.arg("--exit-on-stdin-eof").stdin(Stdio::piped());
     }
-    let mut child = cmd.spawn().expect("lancement de studiod");
+    let mut guard = KillOnDrop(cmd.spawn().expect("lancement de studiod"));
+    let child = &mut guard.0;
 
     let mut ws = connect(&addr).await;
     let identify = ClientMessage::Identify {
