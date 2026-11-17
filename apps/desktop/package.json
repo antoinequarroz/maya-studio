@@ -5,10 +5,15 @@
   "description": "Interface desktop de Maya Studio (Tauri 2 + React), qui parle au moteur uniquement en WebSocket.",
   "type": "module",
   "scripts": {
+    "client": "npm run build --workspace @suite-media/client",
+    "predev": "npm run client",
     "dev": "vite",
+    "prebuild": "npm run client",
     "build": "tsc --noEmit -p tsconfig.json && vite build",
     "preview": "vite preview",
+    "pretypecheck": "npm run client",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "pretest": "npm run client",
     "test": "vitest run",
     "sidecar": "node scripts/prepare-sidecar.mjs",
     "tauri": "tauri"
