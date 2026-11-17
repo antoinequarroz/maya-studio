@@ -35,9 +35,10 @@ fn test_clip() -> &'static Path {
             .args(
                 format!(
                     "videotestsrc num-buffers=90 pattern=ball ! video/x-raw,width=320,height=240,framerate=30/1 \
-                     ! videoconvert ! openh264enc ! h264parse ! queue ! mp4mux name=mux ! filesink location={} \
+                     ! videoconvert ! {} ! h264parse ! queue ! mp4mux name=mux ! filesink location={} \
                      audiotestsrc num-buffers=141 wave=sine freq=440 volume=0.5 \
                      ! audio/x-raw,rate=48000,channels=2 ! audioconvert ! avenc_aac ! aacparse ! queue ! mux.",
+                    studiod::encoders::test_encoder(),
                     path.display()
                 )
                 .split_whitespace(),
@@ -56,7 +57,7 @@ fn engine() -> Arc<Engine> {
         fps: FPS,
     };
     let config = OutputConfig {
-        encoder: EncoderChoice::Named("openh264enc".into()),
+        encoder: EncoderChoice::Named(studiod::encoders::test_encoder().into()),
         ..OutputConfig::default()
     };
     let engine = Engine::new(Studio::new(canvas), temp_dir(), config);
