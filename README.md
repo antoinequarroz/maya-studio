@@ -24,7 +24,8 @@ Fonctionne déjà :
 - capture d'écran PNG/JPEG de n'importe quelle scène ;
 - API WebSocket complète selon le protocole de la suite, avec jeton et événements ;
 - client TypeScript de la suite (`@suite-media/client`) et interface desktop Tauri + React
-  (mode studio, scènes, sources, propriétés, enregistrement et direct).
+  (mode studio, scènes, sources de capture avec leur état, propriétés, mixeur audio avec
+  VU-mètres, enregistrement MP4 / MKV et direct).
 
 Prochaines étapes (voir le projet Linear « Media · Maya Studio ») :
 
@@ -177,7 +178,8 @@ Avec un `device_id` issu de `GetInputDevices`, l'élément est créé par le pé
 lui-même (`gst::Device::create_element`). Une capture qui échoue (caméra débranchée, pas
 d'accès à l'écran, flux SRT coupé) émet `SourceFailed` et est relancée de 1 s à 30 s plus
 tard. Sous macOS, la caméra, le micro et l'écran demandent l'autorisation de l'utilisateur
-(Réglages système → Confidentialité). En session Wayland pure (sans `DISPLAY`), la capture
+(Réglages Système → Confidentialité et sécurité ; voir
+[apps/desktop/README.md](apps/desktop/README.md#autorisations-macos-caméra-micro-écran)). En session Wayland pure (sans `DISPLAY`), la capture
 d'écran n'est pas encore prise en charge : elle demande le portail xdg-desktop-portal
 (ScreenCast) et la source échoue avec un message clair plutôt que de capturer la webcam
 par erreur ; une session X11 ou XWayland fonctionne avec `ximagesrc`.
