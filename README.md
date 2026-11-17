@@ -52,9 +52,10 @@ servira au futur studio web face à un moteur distant.
 Prérequis : Rust stable, `ffmpeg` dans le PATH (provisoire), Node 22+ pour le client de démo.
 
 ```sh
-cargo run --release -p studiod -- --token monjeton
+export STUDIO_TOKEN=$(openssl rand -hex 16)   # jeton aléatoire
+cargo run --release -p studiod
 # dans un autre terminal
-node tools/demo-client.mjs ws://127.0.0.1:4460 monjeton
+node tools/demo-client.mjs ws://127.0.0.1:4460 "$STUDIO_TOKEN"
 ```
 
 Options de `studiod` : `--listen 127.0.0.1:4460`, `--token` (ou `STUDIO_TOKEN`),

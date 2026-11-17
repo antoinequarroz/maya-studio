@@ -8,7 +8,7 @@ et servira à Nino, au futur studio web et aux apps mobiles.
 ```ts
 import { StudioClient, isSuiteError } from "@suite-media/client";
 
-const studio = new StudioClient({ url: "ws://127.0.0.1:4460", token: "monjeton", name: "Nino" });
+const studio = new StudioClient({ url: "ws://127.0.0.1:4460", token: process.env.STUDIO_TOKEN, name: "Nino" });
 await studio.connect();                       // hello → identify → identified
 
 studio.subscribe("ProgramSceneChanged", ({ scene_id }) => console.log("à l'antenne :", scene_id));

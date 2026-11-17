@@ -76,12 +76,13 @@ Variables utiles :
 ### Sans Tauri (navigateur)
 
 ```sh
-cargo run --release -p studiod -- --token monjeton     # à la racine
+export STUDIO_TOKEN=$(openssl rand -hex 16)   # jeton aléatoire, lu aussi par studiod
+cargo run --release -p studiod                  # à la racine
 cd apps/desktop
-VITE_STUDIO_URL=ws://127.0.0.1:4460 VITE_STUDIO_TOKEN=monjeton npm run dev
+VITE_STUDIO_URL=ws://127.0.0.1:4460 VITE_STUDIO_TOKEN="$STUDIO_TOKEN" npm run dev
 ```
 
-Ou ouvrir `http://localhost:5173/?url=ws://127.0.0.1:4460&token=monjeton`. Sans configuration,
+Ou ouvrir `http://localhost:5173/?url=ws://127.0.0.1:4460&token=<votre jeton>`. Sans configuration,
 un écran de connexion demande l'adresse et le jeton.
 
 ## Structure
