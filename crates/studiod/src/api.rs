@@ -180,7 +180,7 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
     let change = match req {
         GetAppInfo => {
             return Ok(json!({
-                "app": { "id": "studio", "name": "Studio", "version": env!("CARGO_PKG_VERSION") },
+                "app": { "id": "studio", "name": "Maya Studio", "version": env!("CARGO_PKG_VERSION") },
                 "protocol": suite_protocol::PROTOCOL_VERSION,
                 "capabilities": CAPABILITIES,
             }))

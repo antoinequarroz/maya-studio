@@ -49,7 +49,7 @@ async fn handle_client(
     sink.send(to_msg(&ServerMessage::Hello {
         app: AppInfo {
             id: "studio".into(),
-            name: "Studio".into(),
+            name: "Maya Studio".into(),
             version: env!("CARGO_PKG_VERSION").into(),
         },
         protocol: PROTOCOL_VERSION,

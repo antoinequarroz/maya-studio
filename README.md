@@ -1,4 +1,4 @@
-# Media Studio
+# Maya Studio
 
 Le studio de production et de diffusion de la **Suite Media** : scènes, sources,
 compositing, enregistrement et diffusion RTMP/SRT, entièrement pilotable par
@@ -16,7 +16,7 @@ Fonctionne déjà :
 - capture d'écran PNG/JPEG de n'importe quelle scène ;
 - API WebSocket complète selon le protocole de la suite, avec jeton et événements.
 
-Prochaines étapes (voir le projet Linear « Media · Studio ») :
+Prochaines étapes (voir le projet Linear « Media · Maya Studio ») :
 
 1. Backend GStreamer in-process (LGPL) avec encodeurs matériels, à la place du processus ffmpeg.
 2. Vraies sources : caméras, capture d'écran et de fenêtre, micros, fichiers média, SRT/NDI entrants.

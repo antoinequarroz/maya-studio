@@ -12,7 +12,7 @@ use studio_core::{Canvas, SourceKind, Studio, Transform};
 #[command(
     name = "studiod",
     version,
-    about = "Moteur du studio media, piloté en WebSocket"
+    about = "Moteur de Maya Studio, piloté en WebSocket"
 )]
 struct Args {
     /// Adresse d'écoute de l'API WebSocket.

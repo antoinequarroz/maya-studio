@@ -30,7 +30,7 @@ Le code de référence est le crate Rust `crates/suite-protocol`. Toute app de l
 ## Poignée de main
 
 ```
-serveur → {"op":"hello","app":{"id":"studio","name":"Studio","version":"0.1.0"},
+serveur → {"op":"hello","app":{"id":"studio","name":"Maya Studio","version":"0.1.0"},
            "protocol":1,"auth_required":true,
            "capabilities":["core","studio.scenes","studio.sources","studio.outputs","studio.preview"]}
 
@@ -102,7 +102,7 @@ traiter dans une seule boucle.
 
 ---
 
-# Domaines du Studio (`app.id = "studio"`)
+# Domaines de Maya Studio (`app.id = "studio"`)
 
 ### `studio.scenes`
 
