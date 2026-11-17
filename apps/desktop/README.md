@@ -61,6 +61,23 @@ cd apps/desktop
 npm run tauri dev
 ```
 
+### Autorisations macOS (caméra, micro, écran)
+
+- **Caméra et micro** : au premier ajout d'une source caméra ou micro, macOS demande
+  l'autorisation avec les textes de [`src-tauri/Info.plist`](src-tauri/Info.plist)
+  (`NSCameraUsageDescription`, `NSMicrophoneUsageDescription`, fusionné par Tauri dans
+  l'app). Un refus se corrige dans Réglages Système → Confidentialité et sécurité →
+  Caméra / Microphone.
+- **Écran** : la capture d'écran n'affiche pas de demande avec bouton ; il faut cocher Maya
+  Studio dans Réglages Système → Confidentialité et sécurité → **Enregistrement de
+  l'écran** (macOS 15 : « Enregistrement de l'écran et de l'audio système »), puis relancer
+  l'app. Sans cette autorisation, la source Écran passe *en échec*.
+- Le moteur `studiod` est lancé par l'app (sidecar) : macOS attribue ses accès à l'app
+  qui l'a lancé, Maya Studio. Les autorisations se donnent donc à **Maya Studio**, pas à
+  `studiod`. En revanche, `studiod` lancé seul depuis un terminal (ou `npm run tauri dev`,
+  dont le binaire n'est pas encore une app empaquetée) hérite des autorisations du
+  terminal (Terminal, iTerm, VS Code…) : c'est lui qu'il faut autoriser en développement.
+
 ### Windows
 
 Prérequis Tauri : [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
@@ -115,6 +132,7 @@ test/                     tests Vitest (jsdom) : champs, raccourcis, sélection,
 src-tauri/
   src/lib.rs              lancement et relance du sidecar, commande studio_connection, arrêt à la fermeture
   tauri.conf.json         externalBin = binaries/studiod
+  Info.plist              textes des autorisations caméra / micro (macOS)
 scripts/prepare-sidecar.mjs
 ```
 
