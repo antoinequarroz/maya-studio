@@ -134,6 +134,27 @@ fn record_capture_state(states: &Mutex<HashMap<Uuid, Value>>, event_type: &str, 
     states.lock().unwrap().insert(id, state);
 }
 
+/// Oublie l'état des captures retirées et de celles dont les réglages ont changé :
+/// `CaptureManager::sync` relance ces dernières sous le même identifiant, et leur
+/// nouveau pipeline ne dit rien avant la première image (`SourceStarted`) ou le
+/// premier échec. Sans cela, `GetCaptureStatus` répondrait l'ancien état.
+/// `synced` garde les réglages du dernier passage.
+fn prune_capture_states(
+    states: &mut HashMap<Uuid, Value>,
+    synced: &mut HashMap<Uuid, SourceKind>,
+    wanted: &[(Uuid, SourceKind)],
+) {
+    states.retain(|id, _| {
+        let now = wanted.iter().find(|(w, _)| w == id).map(|(_, k)| k);
+        match (now, synced.get(id)) {
+            (Some(now), Some(before)) => now == before,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
+    });
+    *synced = wanted.iter().cloned().collect();
+}
+
 pub struct Engine {
     pub studio: Mutex<Studio>,
     /// Ordre des verrous : `outputs` avant `studio`.
@@ -148,6 +169,8 @@ pub struct Engine {
     /// Dernier état connu de chaque capture (`SourceStarted` / `SourceFailed`), pour
     /// les clients qui se connectent après coup (`GetCaptureStatus`).
     capture_states: Arc<Mutex<HashMap<Uuid, Value>>>,
+    /// Réglages des captures lors du dernier `sync_captures`.
+    synced_capture_kinds: Mutex<HashMap<Uuid, SourceKind>>,
     events: broadcast::Sender<ServerMessage>,
     frame: Mutex<u64>,
     pub recordings_dir: std::path::PathBuf,
@@ -186,6 +209,7 @@ impl Engine {
             #[cfg(feature = "gstreamer")]
             captures,
             capture_states,
+            synced_capture_kinds: Mutex::default(),
             events,
             frame: Mutex::new(0),
             recordings_dir,
@@ -227,11 +251,12 @@ impl Engine {
             .capture_sources()
             .map(|s| (s.id, s.kind.clone()))
             .collect();
-        // Les états des captures retirées ne servent plus.
-        self.capture_states
-            .lock()
-            .unwrap()
-            .retain(|id, _| wanted.iter().any(|(w, _)| w == id));
+        // Les états des captures retirées ou relancées ne servent plus.
+        prune_capture_states(
+            &mut self.capture_states.lock().unwrap(),
+            &mut self.synced_capture_kinds.lock().unwrap(),
+            &wanted,
+        );
         #[cfg(feature = "gstreamer")]
         self.captures.sync(&wanted);
         #[cfg(not(feature = "gstreamer"))]
@@ -513,15 +538,6 @@ impl Engine {
         })
     }
 
-    /// Arrête proprement toutes les sorties actives (fichiers finalisés, direct coupé).
-    pub fn stop_all_outputs(&self) {
-        for kind in [OutputKind::Record, OutputKind::Stream] {
-            if self.stop_output(kind).is_ok() {
-                tracing::info!("sortie {kind:?} arrêtée");
-            }
-        }
-    }
-
     pub fn has_active_outputs(&self) -> bool {
         !self.outputs.lock().unwrap().active.is_empty()
     }
@@ -768,6 +784,39 @@ mod tests {
         // Les autres événements ne changent rien.
         record_capture_state(&states, "InputLevels", &json!({ "sources": [] }));
         assert_eq!(states.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn changed_capture_settings_forget_old_state() {
+        let srt = |url: &str| SourceKind::SrtInput { url: url.into() };
+        let (a, b, gone) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let mut states = HashMap::new();
+        let mut synced = HashMap::new();
+        let first = vec![
+            (a, srt("srt://0.0.0.0:9000?mode=listener")),
+            (b, srt("srt://0.0.0.0:9001?mode=listener")),
+            (gone, srt("srt://0.0.0.0:9002?mode=listener")),
+        ];
+        prune_capture_states(&mut states, &mut synced, &first);
+        for id in [a, b, gone] {
+            states.insert(id, json!({ "state": "running" }));
+        }
+        // `a` change d'URL, `b` ne change pas, `gone` est retirée.
+        let second = vec![
+            (a, srt("srt://0.0.0.0:9100?mode=listener")),
+            (b, srt("srt://0.0.0.0:9001?mode=listener")),
+        ];
+        prune_capture_states(&mut states, &mut synced, &second);
+        assert!(
+            !states.contains_key(&a),
+            "état d'avant le changement oublié"
+        );
+        assert_eq!(states[&b], json!({ "state": "running" }));
+        assert!(!states.contains_key(&gone));
+        // Le nouvel état de `a` est gardé tant que ses réglages restent les mêmes.
+        states.insert(a, json!({ "state": "failed", "error": "x" }));
+        prune_capture_states(&mut states, &mut synced, &second);
+        assert_eq!(states[&a]["state"], "failed");
     }
 
     #[test]

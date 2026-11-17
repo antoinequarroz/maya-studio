@@ -21,6 +21,7 @@ import {
   SuiteError,
 } from "@suite-media/client";
 import { KIND_LABELS } from "../sourceKinds";
+import { captureSettingsChange, captureSettingsKey } from "./captureSettings";
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 export interface Toast {
@@ -46,7 +47,7 @@ export interface StudioContextValue {
   encoders: EncodersInfo | null;
   /**
    * État des captures par identifiant de source : instantané `GetCaptureStatus` à la
-   * connexion, puis `SourceAdded` / `SourceStarted` / `SourceFailed`.
+   * connexion, puis `SourceAdded` / `SourceUpdated` / `SourceStarted` / `SourceFailed`.
    */
   captures: Readonly<Record<string, CaptureStatus>>;
   toasts: Toast[];
@@ -138,15 +139,37 @@ export function StudioProvider({ client, url, children }: { client: StudioClient
     // Captures mises à jour par un événement depuis la dernière demande d'instantané :
     // l'instantané, peut-être plus ancien, ne les écrase pas.
     let touched = new Set<string>();
+    // Réglages de capture connus par source : un `SourceUpdated` qui les change fait
+    // relancer le pipeline par le moteur, l'ancien état n'est plus valable.
+    const settings = new Map<string, string | null>();
+    const forget = (id: string) =>
+      setCaptures((c) => {
+        if (!(id in c)) return c;
+        const { [id]: _, ...rest } = c;
+        return rest;
+      });
 
     const offEvents = client.subscribe("*", (data, ev) => {
       if (HIGH_RATE_EVENTS.has(ev.type)) return;
       const touch = (id: string) => touched.add(id);
       if (ev.type === "SourceAdded") {
         const { source } = data as { source: Source };
+        settings.set(source.id, captureSettingsKey(source));
         if (isCaptureKind(source.kind)) {
           touch(source.id);
           setCaptures((c) => (source.id in c ? c : { ...c, [source.id]: { state: "starting" } }));
+        }
+      } else if (ev.type === "SourceUpdated") {
+        const { source } = data as { source: Source };
+        const after = captureSettingsKey(source);
+        const change = captureSettingsChange(settings.get(source.id), after);
+        settings.set(source.id, after);
+        if (change !== "unchanged") {
+          touch(source.id);
+          // Le prochain échec des nouveaux réglages mérite sa notification.
+          failedSources.delete(source.id);
+          if (change === "restarted") setCaptures((c) => ({ ...c, [source.id]: { state: "starting" } }));
+          else forget(source.id);
         }
       } else if (ev.type === "SourceStarted") {
         const d = data as SourceStartedData;
@@ -167,11 +190,7 @@ export function StudioProvider({ client, url, children }: { client: StudioClient
         }));
       } else if (ev.type === "SourceRemoved") {
         const { source_id } = data as { source_id: string };
-        setCaptures((c) => {
-          if (!(source_id in c)) return c;
-          const { [source_id]: _, ...rest } = c;
-          return rest;
-        });
+        forget(source_id);
         failedSources.delete(source_id);
       }
       if (!snapshotLoaded) {
@@ -198,6 +217,8 @@ export function StudioProvider({ client, url, children }: { client: StudioClient
         for (const [type, data] of backlog) s = applyStudioEvent(s, type, data);
         backlog = [];
         snapshotLoaded = true;
+        settings.clear();
+        for (const scene of s.scenes) for (const src of scene.sources) settings.set(src.id, captureSettingsKey(src));
         setState(s);
         void refreshOutputs();
         // Encodeurs et état des captures : informatifs, un moteur plus ancien peut ne
