@@ -18,6 +18,19 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// Tue le processus `studiod` si le test s'arrête avant lui (assertion ratée) :
+/// sans cela, un échec laisse un moteur orphelin qui tourne indéfiniment.
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Ok(None) = self.0.try_wait() {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+}
+
 async fn connect(
     addr: &str,
 ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>> {
@@ -37,18 +50,21 @@ async fn run_signal_test(signal: &str) {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let addr = format!("127.0.0.1:{}", free_port());
-    let mut child = Command::new(env!("CARGO_BIN_EXE_studiod"))
-        .args(["--listen", &addr, "--width", "320", "--height", "240"])
-        .args([
-            "--encoder",
-            studiod::encoders::test_encoder(),
-            "--recordings",
-        ])
-        .arg(&dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("lancement de studiod");
+    let mut guard = KillOnDrop(
+        Command::new(env!("CARGO_BIN_EXE_studiod"))
+            .args(["--listen", &addr, "--width", "320", "--height", "240"])
+            .args([
+                "--encoder",
+                studiod::encoders::test_encoder(),
+                "--recordings",
+            ])
+            .arg(&dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("lancement de studiod"),
+    );
+    let child = &mut guard.0;
 
     let mut ws = connect(&addr).await;
     let identify = ClientMessage::Identify {
