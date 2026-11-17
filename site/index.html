@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Maya Studio · Ton studio de direct</title>
+    <meta name="description" content="Maya Studio compose tes scènes, mixe ton son, enregistre et diffuse en RTMP ou SRT. Un studio de direct sans OBS, pilotable par toutes les apps de la suite Postmelo." />
+    <meta name="theme-color" content="#efede8" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0f0f0e" media="(prefers-color-scheme: dark)" />
+    <meta property="og:title" content="Maya Studio" />
+    <meta property="og:description" content="Ton studio de direct : scènes, son, enregistrement et diffusion, pilotable par toute la suite." />
+    <meta property="og:image" content="/assets/studio-scenes.png" />
+    <meta property="og:locale" content="fr_CH" />
+    <link rel="icon" href="/assets/icon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/styles.css" />
+    <!-- Sets data-theme before the first paint when the visitor forced a theme. -->
+    <script>
+      try {
+        var t = localStorage.getItem("theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <header class="top" id="top">
+      <div class="wrap">
+        <a class="brand" href="#" aria-label="Maya Studio, haut de page">
+          <svg class="logo" viewBox="0 0 28 28" aria-hidden="true">
+            <rect width="28" height="28" rx="8" fill="var(--ink)" />
+            <circle cx="14" cy="14" r="7.4" fill="none" stroke="var(--bg)" stroke-width="1.7" opacity=".55" />
+            <circle cx="14" cy="14" r="3.6" fill="var(--accent)" />
+          </svg>
+          Maya Studio
+        </a>
+        <nav class="nav" aria-label="Sections">
+          <a href="#fonctions">Fonctions</a>
+          <a href="#api">API</a>
+          <a href="#plateformes">Plateformes</a>
+          <a href="#suite">La suite</a>
+        </nav>
+        <div class="top-actions">
+          <button class="icon-btn" id="theme" type="button" aria-label="Changer de thème">
+            <svg class="theme-light-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z" /></svg>
+            <svg class="theme-dark-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2m-7.07-2.93 1.41-1.41m11.32-11.32 1.41-1.41M2 12h2m16 0h2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41" /></svg>
+          </button>
+          <a class="btn btn-primary" href="#beta">Rejoindre la bêta</a>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="wrap">
+          <span class="eyebrow rise"><span class="rec-dot" aria-hidden="true"></span>Bêta privée en préparation</span>
+          <h1 class="display rise rise-2">Ton studio de direct, <em>à toi.</em></h1>
+          <p class="lead rise rise-3">
+            Maya Studio compose tes scènes, mixe ton son, enregistre et diffuse en RTMP ou SRT. Un moteur écrit en Rust avec GStreamer, sans OBS, et pilotable par toutes les apps de la suite.
+          </p>
+          <div class="ctas rise rise-3">
+            <a class="btn btn-primary btn-lg" href="#beta">Rejoindre la bêta</a>
+            <a class="btn btn-secondary btn-lg" href="#fonctions">Voir ce qu'il sait faire</a>
+          </div>
+          <p class="meta rise rise-3">Mac et Windows d'abord. Web, iOS et Android ensuite.</p>
+
+          <div class="shot rise rise-4">
+            <div class="shot-bar" aria-hidden="true"><span></span><span></span><span></span><b>Maya Studio</b></div>
+            <img src="/assets/studio-scenes.png" width="1440" height="900" alt="L'interface de Maya Studio : l'aperçu à gauche, le programme à l'antenne à droite, le bouton Couper au milieu, et en dessous les scènes, les sources, les propriétés et les sorties." />
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="fonctions">
+        <div class="wrap">
+          <div class="section-head">
+            <span class="kicker">Fonctions</span>
+            <h2 class="display">Tout ce qu'il faut pour passer à l'antenne.</h2>
+            <p>Le studio fait le travail d'une régie : il prépare, il coupe, il enregistre et il diffuse. Toi, tu restes sur ce que tu racontes.</p>
+          </div>
+          <div class="grid grid-3">
+            <article class="card feature">
+              <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="8" height="12" rx="2" /><rect x="14" y="5" width="8" height="12" rx="2" /><path d="M10 11h4" /></svg></div>
+              <h3>Aperçu et programme</h3>
+              <p>Prépare la scène suivante pendant que l'autre est à l'antenne, puis coupe d'une touche, Espace ou Entrée.</p>
+            </article>
+            <article class="card feature">
+              <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5-9 5-9-5 9-5Z" /><path d="m3 12 9 5 9-5" /><path d="m3 17 9 5 9-5" /></svg></div>
+              <h3>Scènes et sources</h3>
+              <p>Caméras, écran, micros, fichiers, flux SRT entrants, images et mires. Position, taille et opacité au pixel près.</p>
+            </article>
+            <article class="card feature">
+              <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4" /></svg></div>
+              <h3>Mixeur audio</h3>
+              <p>Un niveau par source, des VU-mètres en direct et un bouton muet toujours à portée de main.</p>
+            </article>
+            <article class="card feature">
+              <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="3.5" fill="currentColor" /></svg></div>
+              <h3>Enregistrement</h3>
+              <p>MP4 ou MKV en H.264 et AAC, avec l'encodeur matériel de ta machine quand elle en a un.</p>
+            </article>
+            <article class="card feature">
+              <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.9 19.1a10 10 0 0 1 0-14.2M7.8 16.2a6 6 0 0 1 0-8.4M16.2 7.8a6 6 0 0 1 0 8.4M19.1 4.9a10 10 0 0 1 0 14.2" /><circle cx="12" cy="12" r="2" /></svg></div>
+              <h3>Direct RTMP et SRT</h3>
+              <p>YouTube, Twitch ou ton propre serveur : une adresse, une clé, et tu es en direct.</p>
+            </article>
+            <article class="card feature">
+              <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m8 9-4 3 4 3M16 9l4 3-4 3M14 5l-4 14" /></svg></div>
+              <h3>Pilotable de partout</h3>
+              <p>Tout ce que fait l'interface passe par une API WebSocket. Nino, un script ou une télécommande maison peuvent tout faire.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="captures" style="padding-top: 0">
+        <div class="wrap">
+          <div class="section-head">
+            <span class="kicker">En images</span>
+            <h2 class="display">Une régie, pas un tableau de bord.</h2>
+            <p>L'aperçu et le programme en grand, les réglages en dessous, et l'état de chaque sortie toujours visible.</p>
+          </div>
+          <div class="gallery">
+            <figure>
+              <div class="shot">
+                <div class="shot-bar" aria-hidden="true"><span></span><span></span><span></span><b>Sources et audio</b></div>
+                <img src="/assets/studio-captures.png" width="1440" height="900" loading="lazy" alt="Maya Studio avec une source micro sélectionnée : son périphérique d'entrée, le mixeur audio avec ses VU-mètres, et l'enregistrement en cours en MP4." />
+              </div>
+              <figcaption>Les sources de la scène, leurs réglages, le mixeur audio et l'enregistrement en cours.</figcaption>
+            </figure>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="api" style="padding-top: 0">
+        <div class="wrap api">
+          <div>
+            <div class="section-head" style="margin-bottom: 0">
+              <span class="kicker">API</span>
+              <h2 class="display">Une seule langue pour toute la suite.</h2>
+              <p>Maya Studio parle le protocole commun de la suite. Une app qui sait piloter le studio sait aussi parler à Nino, et inversement.</p>
+            </div>
+            <ul>
+              <li><span><b>Un WebSocket, du JSON.</b> Chaque app de la suite expose le même format de requêtes, de réponses et d'événements.</span></li>
+              <li><span><b>Un jeton par installation.</b> Le même jeton ouvre toutes les apps d'un plateau.</span></li>
+              <li><span><b>Versionné.</b> Ajouter une requête ne casse rien : deux apps de versions différentes continuent de se comprendre.</span></li>
+            </ul>
+          </div>
+          <figure class="code" aria-label="Exemple d'échange avec Maya Studio">
+            <div class="code-bar"><span class="rec-dot" aria-hidden="true"></span>ws://studio.local:4460</div>
+<pre><span class="d">// Nino se présente au studio</span>
+{<span class="k">"op"</span>:<span class="s">"identify"</span>, <span class="k">"token"</span>:<span class="s">"…"</span>,
+ <span class="k">"app"</span>:{<span class="k">"id"</span>:<span class="s">"nino"</span>, <span class="k">"name"</span>:<span class="s">"Nino"</span>}}
+
+<span class="d">// puis passe une scène à l'antenne</span>
+{<span class="k">"op"</span>:<span class="s">"request"</span>, <span class="k">"id"</span>:<span class="s">"42"</span>,
+ <span class="k">"type"</span>:<span class="s">"SetProgramScene"</span>,
+ <span class="k">"data"</span>:{<span class="k">"scene"</span>:<span class="s">"Plateau"</span>}}
+
+<span class="d">// et tous les clients sont prévenus</span>
+{<span class="k">"op"</span>:<span class="s">"event"</span>, <span class="k">"app"</span>:<span class="s">"studio"</span>,
+ <span class="k">"type"</span>:<span class="s">"ProgramSceneChanged"</span>, <span class="k">"data"</span>:{…}}</pre>
+          </figure>
+        </div>
+      </section>
+
+      <section class="section" id="plateformes" style="padding-top: 0">
+        <div class="wrap">
+          <div class="section-head">
+            <span class="kicker">Plateformes</span>
+            <h2 class="display">Sur ton ordinateur d'abord, partout ensuite.</h2>
+          </div>
+          <div class="grid grid-2">
+            <article class="card platform">
+              <div class="platform-head"><h3>macOS</h3><span class="chip"><span class="status-dot warn"></span>En développement</span></div>
+              <p>Une vraie app dans le Dock, avec l'encodeur matériel du Mac.</p>
+            </article>
+            <article class="card platform">
+              <div class="platform-head"><h3>Windows</h3><span class="chip"><span class="status-dot warn"></span>En développement</span></div>
+              <p>La même app et le même moteur, avec l'encodeur de ta carte graphique.</p>
+            </article>
+            <article class="card platform">
+              <div class="platform-head"><h3>Web</h3><span class="chip"><span class="status-dot"></span>Plus tard</span></div>
+              <p>La régie depuis un navigateur, pour piloter un studio à distance.</p>
+            </article>
+            <article class="card platform">
+              <div class="platform-head"><h3>iOS et Android</h3><span class="chip"><span class="status-dot"></span>Plus tard</span></div>
+              <p>Ton téléphone devient une caméra de plus, branchée au studio sans câble.</p>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="suite" style="padding-top: 0">
+        <div class="wrap">
+          <div class="section-head">
+            <span class="kicker">La suite Postmelo</span>
+            <h2 class="display">Un outil parmi d'autres, qui parlent tous ensemble.</h2>
+            <p>Même design, même compte, une couleur chacun. Maya Studio, c'est le rouge, comme le voyant REC.</p>
+          </div>
+          <div class="suite">
+            <article class="card app current">
+              <span class="app-mark" style="--c: var(--accent)"><i></i></span>
+              <div><h3>Maya Studio <span class="chip chip-accent">Ici</span></h3><p>Le studio de direct et d'enregistrement.</p></div>
+            </article>
+            <article class="card app">
+              <span class="app-mark" style="--c: var(--app-nino)"><i></i></span>
+              <div><h3>Nino</h3><p>La régie automatique, qui pilote le studio à ta place.</p></div>
+            </article>
+            <article class="card app">
+              <span class="app-mark" style="--c: var(--app-lamio)"><i></i></span>
+              <div><h3>Lamio</h3><p>La messagerie d'équipe et le socle de la suite.</p></div>
+            </article>
+            <article class="card app">
+              <span class="app-mark" style="--c: var(--app-metricove)"><i></i></span>
+              <div><h3>Metricove</h3><p>Le calendrier éditorial et la publication sur les réseaux.</p></div>
+            </article>
+            <article class="card app">
+              <span class="app-mark" style="--c: var(--app-cairn)"><i></i></span>
+              <div><h3>Cairn</h3><p>Les notes en Markdown et le coffre chiffré.</p></div>
+            </article>
+            <article class="card app">
+              <span class="app-mark" style="--c: var(--app-alfred)"><i></i></span>
+              <div><h3>Alfred</h3><p>L'assistant personnel, en commençant par le calendrier.</p></div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Placeholders for what comes with the first releases. Turn a card into a link when its page exists. -->
+      <section class="section" id="bientot" style="padding-top: 0">
+        <div class="wrap">
+          <div class="grid grid-3">
+            <div class="card soon" id="telechargements">
+              <span class="chip">Bientôt</span>
+              <h3>Téléchargements</h3>
+              <p>Les installeurs Mac et Windows, dès la première bêta.</p>
+            </div>
+            <div class="card soon" id="documentation">
+              <span class="chip">Bientôt</span>
+              <h3>Documentation de l'API</h3>
+              <p>Toutes les requêtes et tous les événements du studio, avec des exemples.</p>
+            </div>
+            <div class="card soon" id="notes-de-version">
+              <span class="chip">Bientôt</span>
+              <h3>Notes de version</h3>
+              <p>Ce qui change à chaque version, en clair.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="beta" style="padding-top: 0">
+        <div class="wrap">
+          <div class="card beta">
+            <span class="eyebrow"><span class="rec-dot" aria-hidden="true"></span>Places limitées</span>
+            <h2 class="display" style="margin-top: 18px">Rejoins la bêta.</h2>
+            <p>Laisse ton adresse : tu reçois l'app dès qu'elle tourne sur ta machine, et tu nous dis ce qui manque.</p>
+            <!--
+              Where sign-ups go: set data-endpoint to a URL that accepts a JSON POST
+              {email, platform}, or data-mailto to an address. With neither, the form
+              says sign-ups open soon and sends nothing.
+            -->
+            <form class="beta-form" id="beta-form" data-endpoint="" data-mailto="info@antoinequarroz.ch" novalidate>
+              <label class="visually-hidden" for="beta-email">Adresse e-mail</label>
+              <input class="input" id="beta-email" name="email" type="email" autocomplete="email" placeholder="ton@adresse.ch" required />
+              <label class="visually-hidden" for="beta-platform">Ta plateforme</label>
+              <select class="input" id="beta-platform" name="platform">
+                <option value="mac">Mac</option>
+                <option value="windows">Windows</option>
+                <option value="les-deux">Les deux</option>
+              </select>
+              <button class="btn btn-primary btn-lg" type="submit">M'inscrire</button>
+            </form>
+            <p class="form-note" id="beta-note" role="status" aria-live="polite"></p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="wrap">
+        <span class="brand">
+          <svg class="logo" viewBox="0 0 28 28" aria-hidden="true" style="width: 22px; height: 22px">
+            <rect width="28" height="28" rx="8" fill="var(--ink)" />
+            <circle cx="14" cy="14" r="7.4" fill="none" stroke="var(--bg)" stroke-width="1.7" opacity=".55" />
+            <circle cx="14" cy="14" r="3.6" fill="var(--accent)" />
+          </svg>
+          Maya Studio
+        </span>
+        <span>Fait partie de la suite <a href="https://postmelo.ch">Postmelo</a>.</span>
+        <nav aria-label="Pied de page">
+          <a href="#fonctions">Fonctions</a>
+          <a href="#api">API</a>
+          <a href="#suite">La suite</a>
+          <a href="#beta">Bêta</a>
+        </nav>
+      </div>
+    </footer>
+
+    <script src="/main.js" defer></script>
+  </body>
+</html>
