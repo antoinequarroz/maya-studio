@@ -159,8 +159,9 @@ pub fn plan_block(video_frames: u64, fps: u32, audio_pos: u64) -> Option<u64> {
 }
 
 /// Arrondi des niveaux au dixième de dB, assez pour un VU-mètre et plus léger en JSON.
-pub fn round_db(db: f32) -> f32 {
-    (db * 10.0).round() / 10.0
+/// Renvoie un f64 pour que le JSON affiche `-7.9` et non `-7.900000095367432`.
+pub fn round_db(db: f32) -> f64 {
+    (f64::from(db) * 10.0).round() / 10.0
 }
 
 #[cfg(test)]
