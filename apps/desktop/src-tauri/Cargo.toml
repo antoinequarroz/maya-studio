@@ -26,3 +26,7 @@ getrandom = "0.3"
 log = "0.4"
 # Déjà utilisé par Tauri (runtime asynchrone) : seulement pour la temporisation du redémarrage.
 tokio = { version = "1", features = ["time"] }
+
+# Arrêt propre du moteur (SIGTERM) à la fermeture de l'app ; déjà présent via Tauri.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

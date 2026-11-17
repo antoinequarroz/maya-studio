@@ -3,7 +3,8 @@
 //! Le shell ne fait que trois choses :
 //! 1. lancer le moteur `studiod` en sidecar sur 127.0.0.1, port libre et jeton aléatoires ;
 //! 2. donner l'URL et le jeton au front-end par la commande `studio_connection` ;
-//! 3. arrêter le moteur à la fermeture de l'app, le relancer s'il plante (en prévenant
+//! 3. arrêter le moteur à la fermeture de l'app (proprement d'abord : SIGTERM, sorties
+//!    finalisées), le relancer s'il plante (en prévenant
 //!    le front-end par l'événement `studio-engine`), et faire en sorte qu'il s'arrête
 //!    aussi si l'app meurt brutalement (`--exit-on-stdin-eof`).
 //!
@@ -34,6 +35,9 @@ pub const ENGINE_EVENT: &str = "studio-engine";
 const MAX_RESTARTS: usize = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(60);
 const RESTART_DELAY: Duration = Duration::from_secs(1);
+/// Délai laissé au moteur, à la fermeture de l'app, pour finaliser les enregistrements
+/// (fin de flux, atome moov des MP4) avant l'arrêt forcé.
+const GRACEFUL_STOP: Duration = Duration::from_secs(10);
 
 /// Ce dont le front-end a besoin pour se connecter au moteur.
 #[derive(Debug, Clone, Serialize)]
@@ -298,11 +302,48 @@ fn stop_studiod(app: &tauri::AppHandle) {
         state.sidecar.shutting_down.store(true, Ordering::SeqCst);
         if let Some(child) = state.sidecar.child.lock().unwrap().take() {
             log::info!("arrêt du moteur studiod");
+            // D'abord l'arrêt propre (sorties finalisées, captures arrêtées), puis l'arrêt
+            // forcé du groupe de processus, qui ne fait plus rien si le moteur est parti.
+            if graceful_stop(child.pid(), GRACEFUL_STOP) {
+                log::info!("moteur studiod arrêté proprement");
+            } else {
+                log::warn!("moteur studiod toujours là après {GRACEFUL_STOP:?} : arrêt forcé");
+            }
             if let Err(e) = child.kill() {
                 log::warn!("impossible d'arrêter studiod : {e}");
             }
         }
     }
+}
+
+/// Demande au moteur de s'arrêter proprement (SIGTERM, que `studiod` traite comme
+/// Ctrl-C) et attend sa fin, au plus `timeout`. Renvoie vrai s'il est parti.
+#[cfg(unix)]
+fn graceful_stop(pid: u32, timeout: Duration) -> bool {
+    let pid = pid as libc::pid_t;
+    // SAFETY : simple envoi de signal à un processus que l'app a lancé.
+    if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+        // ESRCH : déjà parti.
+        return std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+    }
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        // Le plugin shell attend (et récolte) le processus dans son propre thread :
+        // une fois parti, le signal 0 échoue avec ESRCH.
+        // SAFETY : signal 0, aucun effet sur le processus.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+/// Sous Windows, pas de signal d'arrêt propre vers un processus console sans fenêtre :
+/// l'arrêt reste forcé (objet job). `--exit-on-stdin-eof` couvre la mort brutale de l'app.
+#[cfg(not(unix))]
+fn graceful_stop(_pid: u32, _timeout: Duration) -> bool {
+    false
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -356,10 +397,50 @@ mod tests {
         assert!(budget.allow(t0 + Duration::from_secs(63)));
     }
 
+    /// Un processus lancé par un autre test pendant que `free_port` tient sa socket en
+    /// hérite brièvement (entre fork et exec) : ces tests ne tournent pas en même temps.
+    static SPAWN_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn free_port_is_usable() {
+        let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let port = free_port().unwrap();
         assert!(port > 0);
         TcpListener::bind(("127.0.0.1", port)).unwrap();
+    }
+
+    /// Lance `sh -c script` et le récolte dans un thread, comme le plugin shell.
+    #[cfg(unix)]
+    fn spawn_reaped(script: &str) -> (u32, std::thread::JoinHandle<std::process::ExitStatus>) {
+        let _guard = SPAWN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", script])
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        (pid, std::thread::spawn(move || child.wait().unwrap()))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn graceful_stop_sends_sigterm_and_waits() {
+        // `exec` : le signal arrive à sleep lui-même, qui s'arrête aussitôt.
+        let (pid, waiter) = spawn_reaped("exec sleep 30");
+        assert!(graceful_stop(pid, Duration::from_secs(5)));
+        assert!(!waiter.join().unwrap().success());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn graceful_stop_gives_up_after_timeout() {
+        // Un processus qui ignore SIGTERM : on rend la main après le délai.
+        let (pid, waiter) = spawn_reaped("trap '' TERM; while :; do sleep 0.05; done");
+        std::thread::sleep(Duration::from_millis(100));
+        let start = Instant::now();
+        assert!(!graceful_stop(pid, Duration::from_millis(300)));
+        assert!(start.elapsed() >= Duration::from_millis(300));
+        // SAFETY : nettoyage du processus de test.
+        unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        waiter.join().unwrap();
     }
 }
