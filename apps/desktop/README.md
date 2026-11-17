@@ -80,6 +80,17 @@ npm run tauri dev
   `studiod`. En revanche, `studiod` lancé seul depuis un terminal (ou `npm run tauri dev`,
   dont le binaire n'est pas encore une app empaquetée) hérite des autorisations du
   terminal (Terminal, iTerm, VS Code…) : c'est lui qu'il faut autoriser en développement.
+- **Builds signés et notarisés** : Tauri signe avec le *hardened runtime* (exigé par la
+  notarisation). Sous ce régime, macOS refuse la caméra et le micro sans les droits
+  `com.apple.security.device.camera` et `com.apple.security.device.audio-input`, même
+  avec les textes de l'Info.plist : ils sont déclarés dans
+  [`src-tauri/Entitlements.plist`](src-tauri/Entitlements.plist), référencé par
+  `bundle.macOS.entitlements`. Tauri signe aussi le sidecar `studiod` avec ces droits ;
+  à vérifier sur un build signé :
+  `codesign -d --entitlements - "Maya Studio.app/Contents/MacOS/studiod"`. Sans eux, les
+  sources caméra et micro passent *en échec* dans l'app distribuée alors que
+  `npm run tauri dev` fonctionne.
+
 
 ### Windows
 

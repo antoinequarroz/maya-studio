@@ -39,6 +39,10 @@
     ],
     "category": "Video",
     "shortDescription": "Studio de production et de diffusion en direct",
-    "copyright": "Propriétaire"
+    "copyright": "Propriétaire",
+    "macOS": {
+      "hardenedRuntime": true,
+      "entitlements": "./Entitlements.plist"
+    }
   }
 }
