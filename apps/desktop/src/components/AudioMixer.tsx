@@ -8,7 +8,7 @@
  */
 
 import { findScene, hasAudio, type Source, type SourceLevels, type StudioClient } from "@suite-media/client";
-import { createContext, type CSSProperties, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, type CSSProperties, useContext, useEffect, useMemo, useRef } from "react";
 import {
   type ChannelDisplay,
   dbToFraction,
@@ -24,6 +24,7 @@ import {
   volumeToPercent,
 } from "../audio/meter";
 import { useStudio } from "../studio/StudioContext";
+import { useSliderDraft } from "../useSliderDraft";
 import { useThrottled } from "../useThrottled";
 import { IconSpeaker, IconSpeakerOff, IconWave } from "./Icons";
 import { KindIcon, SourceStatusBadge } from "./SourceBits";
@@ -135,12 +136,13 @@ function Meter({ sourceId, dimmed }: { sourceId: string; dimmed: boolean }) {
 /** Une tranche du mixeur. */
 function Strip({ sceneId, source }: { sceneId: string; source: Source }) {
   const { run } = useStudio();
-  const [draft, setDraft] = useState<number | null>(null);
+  // Le curseur garde la valeur choisie jusqu'à ce que `SourceVolumeChanged` la confirme.
+  const draft = useSliderDraft(volumeToPercent(source.volume));
   const sendVolume = useThrottled((volume: number) => void run("SetSourceVolume", { scene: sceneId, source: source.id, volume }));
-  const percent = draft ?? volumeToPercent(source.volume);
+  const percent = draft.value;
   const muted = !!source.muted;
   const setPercent = (p: number) => {
-    setDraft(p);
+    draft.set(p);
     sendVolume(percentToVolume(p));
   };
 
@@ -180,8 +182,10 @@ function Strip({ sceneId, source }: { sceneId: string; source: Source }) {
         style={{ "--fill": `${percent / 2}%` } as CSSProperties}
         onChange={(e) => setPercent(Number(e.target.value))}
         onDoubleClick={() => setPercent(100)}
-        onPointerUp={() => setDraft(null)}
-        onBlur={() => setDraft(null)}
+        onPointerDown={draft.grab}
+        onPointerUp={draft.release}
+        onPointerCancel={draft.release}
+        onBlur={draft.release}
       />
     </li>
   );
