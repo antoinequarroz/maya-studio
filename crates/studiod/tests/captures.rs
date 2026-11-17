@@ -275,8 +275,12 @@ fn missing_devices_fail_gracefully() {
     assert!(failed["retry_in_ms"].as_u64().unwrap() >= 1000);
     assert!(!failed["error"].as_str().unwrap().is_empty());
 
-    // Capture d'écran sans serveur X : échec propre aussi.
-    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+    // Capture d'écran sans serveur X : échec propre aussi. Ce cas n'existe que sous Linux :
+    // sur macOS et Windows, l'écran est accessible sans DISPLAY.
+    if cfg!(target_os = "linux")
+        && std::env::var_os("DISPLAY").is_none()
+        && std::env::var_os("WAYLAND_DISPLAY").is_none()
+    {
         let display = call(
             &engine,
             "AddSource",
