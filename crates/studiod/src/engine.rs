@@ -457,8 +457,11 @@ impl Engine {
     fn fail_outputs(&self, failed: Vec<(OutputKind, String)>) {
         for (kind, error) in failed {
             tracing::warn!(?kind, %error, "sortie en échec");
-            let _ = self.stop_output(kind);
-            self.emit("OutputFailed", json!({ "output": kind, "error": error }));
+            // La boucle de rendu et le mixeur détectent la même erreur : seul le
+            // thread qui retire effectivement la sortie prévient les clients.
+            if self.stop_output(kind).is_ok() {
+                self.emit("OutputFailed", json!({ "output": kind, "error": error }));
+            }
         }
     }
 
@@ -725,6 +728,20 @@ mod tests {
         assert!(engine.start_output(OutputKind::Record, opts).is_err());
         let outputs = engine.outputs.lock().unwrap();
         assert!(outputs.is_idle(), "l'emplacement doit être libéré");
+    }
+
+    /// La boucle de rendu et le mixeur peuvent signaler la même panne : le
+    /// second signalement, qui trouve la sortie déjà retirée, n'émet rien.
+    #[test]
+    fn output_failure_reported_once() {
+        let engine = engine();
+        let mut events = engine.subscribe();
+        engine.fail_outputs(vec![(OutputKind::Stream, "erreur".into())]);
+        while let Ok(msg) = events.try_recv() {
+            if let ServerMessage::Event { event_type, .. } = msg {
+                assert_ne!(event_type, "OutputFailed", "sortie déjà retirée");
+            }
+        }
     }
 
     #[test]

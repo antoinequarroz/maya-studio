@@ -17,7 +17,7 @@
 //! Les éléments propres à une plateforme sont choisis à l'exécution avec
 //! `gst::ElementFactory::find` (aucun crate spécifique) : `avfvideosrc` sous macOS,
 //! `mfvideosrc` / `ksvideosrc` / `d3d11screencapturesrc` / `wasapi2src` sous Windows,
-//! `v4l2src` / `ximagesrc` / `pipewiresrc` / `pulsesrc` sous Linux.
+//! `v4l2src` / `ximagesrc` / `pulsesrc` (ou `pipewiresrc` pour le son) sous Linux.
 //!
 //! La dernière image de chaque source et son son vont dans le [`MediaStore`] ;
 //! la boucle de rendu et le mixeur audio les y lisent. Un pipeline en erreur
@@ -109,12 +109,17 @@ impl CaptureManager {
             .filter(|(id, c)| !wanted.iter().any(|(w, k)| w == *id && *k == c.kind))
             .map(|(id, _)| *id)
             .collect();
+        // Threads arrêtés dont la source est relancée avec d'autres réglages : le
+        // nouveau thread attend leur fin avant d'ouvrir le périphérique ou le port.
+        let mut predecessors: HashMap<Uuid, JoinHandle<()>> = HashMap::new();
         for id in stale {
             if let Some(c) = captures.remove(&id) {
                 self.media.remove(id);
                 c.stop.stop();
                 // Le thread démonte son pipeline seul : on ne bloque pas l'appelant.
-                drop(c.thread);
+                if let Some(thread) = c.thread {
+                    predecessors.insert(id, thread);
+                }
                 tracing::info!(source = %id, "capture arrêtée");
             }
         }
@@ -122,6 +127,7 @@ impl CaptureManager {
             if captures.contains_key(id) || !kind.is_capture() {
                 continue;
             }
+            let predecessor = predecessors.remove(id);
             let media = Arc::new(SourceMedia::new(kind.has_audio()));
             self.media.insert(*id, Arc::clone(&media));
             let stop = Arc::new(StopSignal::default());
@@ -131,6 +137,7 @@ impl CaptureManager {
                 media,
                 stop: Arc::clone(&stop),
                 emit: Arc::clone(&self.emit),
+                predecessor,
             };
             let thread = std::thread::Builder::new()
                 .name(format!("capture-{}", &id.to_string()[..8]))
@@ -183,6 +190,9 @@ struct CaptureContext {
     media: Arc<SourceMedia>,
     stop: Arc<StopSignal>,
     emit: EmitFn,
+    /// Thread précédent de la même source (réglages changés), déjà prié de
+    /// s'arrêter : on attend qu'il ait libéré le périphérique ou le port.
+    predecessor: Option<JoinHandle<()>>,
 }
 
 /// Fin d'une exécution du pipeline.
@@ -195,7 +205,12 @@ enum RunEnd {
 
 impl CaptureContext {
     /// Boucle de supervision : lance le pipeline, le relance après un échec.
-    fn supervise(self) {
+    fn supervise(mut self) {
+        if let Some(previous) = self.predecessor.take() {
+            // Deux pipelines ne peuvent pas tenir le même périphérique exclusif
+            // (v4l2, avfvideosrc, mfvideosrc) ni écouter sur le même port SRT.
+            let _ = previous.join();
+        }
         let mut backoff = BACKOFF_MIN;
         loop {
             if self.stop.is_stopped() {
@@ -242,6 +257,7 @@ impl CaptureContext {
     }
 
     fn run_once(&self) -> RunEnd {
+        self.media.reset_data_seen();
         let pipeline = match build_pipeline(&self.kind, &self.media) {
             Ok(p) => p,
             Err(e) => return RunEnd::Failed(e),
@@ -277,6 +293,17 @@ impl CaptureContext {
             if self.stop.is_stopped() {
                 return RunEnd::Stopped;
             }
+            if !announced && self.media.data_seen() {
+                // Annoncé à la première image ou au premier son reçu, pas au
+                // passage en lecture : un flux SRT en attente d'émetteur ou un
+                // appelant qui n'a pas encore joint son hôte n'est pas « démarré ».
+                announced = true;
+                tracing::info!(source = %self.id, kind = kind_name(&self.kind), "capture démarrée");
+                (self.emit)(
+                    "SourceStarted",
+                    json!({ "source_id": self.id, "kind": kind_name(&self.kind) }),
+                );
+            }
             let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(100)) else {
                 continue;
             };
@@ -300,18 +327,6 @@ impl CaptureContext {
                 }
                 gst::MessageView::Eos(_) => {
                     return RunEnd::Failed("fin de flux inattendue".into());
-                }
-                gst::MessageView::StateChanged(s)
-                    if !announced
-                        && s.current() == gst::State::Playing
-                        && msg.src() == Some(pipeline.upcast_ref::<gst::Object>()) =>
-                {
-                    announced = true;
-                    tracing::info!(source = %self.id, kind = kind_name(&self.kind), "capture démarrée");
-                    (self.emit)(
-                        "SourceStarted",
-                        json!({ "source_id": self.id, "kind": kind_name(&self.kind) }),
-                    );
                 }
                 _ => {}
             }
@@ -353,16 +368,26 @@ pub fn camera_candidates(os: &str) -> &'static [&'static str] {
     }
 }
 
-/// Sources de capture d'écran par plateforme. Sous Linux, PipeWire passe en
-/// premier en session Wayland (X11 n'y donne pas accès à l'écran).
-pub fn display_candidates(os: &str, wayland_only: bool) -> &'static [&'static str] {
+/// Sources de capture d'écran par plateforme.
+///
+/// `pipewiresrc` n'en fait pas partie : sans le nœud ScreenCast obtenu auprès du
+/// portail xdg-desktop-portal, il se brancherait sur la source vidéo PipeWire
+/// par défaut (souvent la webcam) au lieu de l'écran.
+pub fn display_candidates(os: &str) -> &'static [&'static str] {
     match os {
         "macos" => &["avfvideosrc"],
         "windows" => &["d3d11screencapturesrc"],
-        "linux" if wayland_only => &["pipewiresrc", "ximagesrc"],
-        "linux" => &["ximagesrc", "pipewiresrc"],
+        "linux" => &["ximagesrc"],
         _ => &[],
     }
+}
+
+/// Capture d'écran impossible dans cet environnement, avec la raison.
+/// En session Wayland pure (sans XWayland), seule la voie du portail permet de
+/// capturer l'écran, et elle n'est pas encore implémentée.
+pub fn display_unsupported(os: &str, wayland_only: bool) -> Option<&'static str> {
+    (os == "linux" && wayland_only)
+        .then_some("capture d'écran Wayland non prise en charge (portail requis)")
 }
 
 /// Entrées audio par plateforme.
@@ -450,10 +475,11 @@ fn camera_element(device_id: Option<&str>) -> Result<gst::Element, String> {
 }
 
 fn display_element(display_id: Option<&str>) -> Result<gst::Element, String> {
-    let el = make_first(
-        display_candidates(std::env::consts::OS, wayland_only()),
-        "capture d'écran",
-    )?;
+    let os = std::env::consts::OS;
+    if let Some(reason) = display_unsupported(os, wayland_only()) {
+        return Err(reason.into());
+    }
+    let el = make_first(display_candidates(os), "capture d'écran")?;
     match factory_name(&el).as_str() {
         "avfvideosrc" => {
             set_prop_str(&el, "capture-screen", "true")?;
@@ -474,16 +500,6 @@ fn display_element(display_id: Option<&str>) -> Result<gst::Element, String> {
                 Some(id) if is_number(id) => set_prop_str(&el, "screen-num", id)?,
                 Some(id) => set_prop_str(&el, "display-name", id)?,
                 None => {}
-            }
-        }
-        "pipewiresrc" => {
-            if let Some(id) = display_id {
-                let prop = if has_prop(&el, "target-object") {
-                    "target-object"
-                } else {
-                    "path"
-                };
-                set_prop_str(&el, prop, id)?;
             }
         }
         _ => {}
@@ -664,6 +680,7 @@ fn audio_branch(media: &Arc<SourceMedia>, sync: bool) -> Result<gst::Bin, String
                         .map(|b| i16::from_le_bytes([b[0], b[1]]))
                         .collect();
                     audio.push(&samples);
+                    media.mark_data_seen();
                 }
                 Ok(gst::FlowSuccess::Ok)
             })
@@ -803,6 +820,13 @@ pub fn build_pipeline(
         SourceKind::SrtInput { url } => {
             let src = make("srtsrc")?;
             src.set_property("uri", url);
+            // Sans reconnexion automatique, un flux coupé ou un hôte injoignable
+            // devient une erreur ou une fin de flux : `SourceFailed`, image effacée,
+            // puis relance par le superviseur. Avec la reconnexion (défaut de
+            // srtsrc), la panne n'est qu'un avertissement et l'image reste figée.
+            if has_prop(&src, "auto-reconnect") {
+                src.set_property("auto-reconnect", false);
+            }
             let decode = make("decodebin")?;
             add(&src)?;
             add(&decode)?;
@@ -826,12 +850,15 @@ mod tests {
         assert_eq!(camera_candidates("linux"), ["v4l2src"]);
         assert_eq!(camera_candidates("macos"), ["avfvideosrc"]);
         assert_eq!(camera_candidates("windows"), ["mfvideosrc", "ksvideosrc"]);
-        assert_eq!(display_candidates("linux", false)[0], "ximagesrc");
-        assert_eq!(display_candidates("linux", true)[0], "pipewiresrc");
-        assert_eq!(
-            display_candidates("windows", false),
-            ["d3d11screencapturesrc"]
-        );
+        assert_eq!(display_candidates("linux"), ["ximagesrc"]);
+        assert_eq!(display_candidates("windows"), ["d3d11screencapturesrc"]);
+        // Wayland pur : pas de pipewiresrc sans portail, une erreur claire.
+        assert!(!display_candidates("linux").contains(&"pipewiresrc"));
+        assert!(display_unsupported("linux", true)
+            .unwrap()
+            .contains("portail requis"));
+        assert!(display_unsupported("linux", false).is_none());
+        assert!(display_unsupported("macos", true).is_none());
         assert_eq!(audio_candidates("macos"), ["osxaudiosrc"]);
         assert!(camera_candidates("plan9").is_empty());
     }

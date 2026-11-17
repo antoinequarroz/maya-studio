@@ -149,22 +149,31 @@ l'exécution selon la plateforme (le même binaire fonctionne avec ou sans les p
 | Source | macOS | Windows | Linux |
 |---|---|---|---|
 | `camera` | `avfvideosrc` | `mfvideosrc`, `ksvideosrc` | `v4l2src` |
-| `display_capture` | `avfvideosrc capture-screen=true` | `d3d11screencapturesrc` | `ximagesrc` (X11), `pipewiresrc` (Wayland) |
+| `display_capture` | `avfvideosrc capture-screen=true` | `d3d11screencapturesrc` | `ximagesrc` (X11, XWayland) |
 | `window_capture` | — | `d3d11screencapturesrc window-handle` | `ximagesrc xid` |
 | `audio_input` | `osxaudiosrc` | `wasapi2src`, `wasapisrc` | `pulsesrc`, `pipewiresrc`, `alsasrc` |
 | `media_file` | `uridecodebin` | `uridecodebin` | `uridecodebin` |
-| `srt_input` | `srtsrc ! decodebin` | `srtsrc ! decodebin` | `srtsrc ! decodebin` |
+| `srt_input` | `srtsrc auto-reconnect=false ! decodebin` | idem | idem |
 
 Avec un `device_id` issu de `GetInputDevices`, l'élément est créé par le périphérique
 lui-même (`gst::Device::create_element`). Une capture qui échoue (caméra débranchée, pas
 d'accès à l'écran, flux SRT coupé) émet `SourceFailed` et est relancée de 1 s à 30 s plus
 tard. Sous macOS, la caméra, le micro et l'écran demandent l'autorisation de l'utilisateur
-(Réglages système → Confidentialité) ; sous Wayland, la capture d'écran passe par PipeWire
-et le portail de bureau.
+(Réglages système → Confidentialité). En session Wayland pure (sans `DISPLAY`), la capture
+d'écran n'est pas encore prise en charge : elle demande le portail xdg-desktop-portal
+(ScreenCast) et la source échoue avec un message clair plutôt que de capturer la webcam
+par erreur ; une session X11 ou XWayland fonctionne avec `ximagesrc`.
 
-Limite connue : le son des interfaces audio n'est pas rééchantillonné pour suivre la dérive
-de leur horloge ; la file de chaque source est bornée à 200 ms, un écart se traduit par un
-petit saut audio de temps en temps sur de longues sessions.
+`SourceStarted` est émis à la première image ou au premier son reçu (une entrée SRT en
+écoute sans émetteur n'est pas « démarrée »). La reconnexion automatique de `srtsrc` est
+désactivée : un flux coupé ou un hôte injoignable donne `SourceFailed`, l'image est
+effacée et le superviseur relance la capture. Quand les réglages d'une capture changent,
+le nouveau pipeline attend que l'ancien ait libéré le périphérique ou le port.
+
+Dérive d'horloge audio : chaque entrée garde sa file proche de sa cible en dupliquant ou en
+jetant une trame par bloc de 10 ms quand le remplissage minimal observé sur une seconde
+sort de la plage 5–30 ms. Les écarts courants (10 à 100 ppm) sont ainsi rattrapés sans
+trou de silence ni latence qui grimpe jusqu'à la borne de 200 ms.
 
 Tester la diffusion SRT en local :
 

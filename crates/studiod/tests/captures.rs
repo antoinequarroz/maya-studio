@@ -325,3 +325,128 @@ fn media_file_loops() {
     );
     engine.shutdown_captures();
 }
+
+/// Port UDP libre pour un test SRT.
+fn free_udp_port() -> u16 {
+    std::net::UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Émetteur SRT de test (mire MPEG-2 en MPEG-TS, une image clé toutes les 12
+/// images : un récepteur qui arrive en cours de flux décode vite) lancé avec gst-launch.
+struct SrtSender(std::process::Child);
+
+impl SrtSender {
+    fn start(uri: &str) -> Self {
+        let child = Command::new("gst-launch-1.0")
+            .arg("-q")
+            .args(
+                format!(
+                    "videotestsrc is-live=true pattern=ball ! video/x-raw,width=320,height=240,framerate=30/1 \
+                     ! videoconvert ! avenc_mpeg2video ! mpegvideoparse ! mpegtsmux ! srtsink uri={uri}"
+                )
+                .split_whitespace(),
+            )
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("gst-launch-1.0 est nécessaire pour ce test");
+        Self(child)
+    }
+}
+
+impl Drop for SrtSender {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Changer les réglages d'une entrée SRT en écoute relance la capture sur le
+/// même port : l'ancien pipeline doit l'avoir libéré avant que le nouveau
+/// l'ouvre, sinon « Cannot bind » et un `SourceFailed` parasite.
+#[test]
+fn srt_listener_restart_reuses_port() {
+    let engine = engine();
+    let mut events = engine.subscribe();
+    let port = free_udp_port();
+    let added = call(
+        &engine,
+        "AddSource",
+        json!({ "scene": "Scène 1", "name": "SRT", "kind": "srt_input",
+                "url": format!("srt://:{port}?mode=listener") }),
+    );
+    let id = added["source"]["id"].as_str().unwrap().to_string();
+    // Le premier pipeline écoute (en attente d'un émetteur).
+    std::thread::sleep(Duration::from_millis(500));
+    call(
+        &engine,
+        "UpdateSource",
+        json!({ "scene": "Scène 1", "source": "SRT", "kind": "srt_input",
+                "url": format!("srt://:{port}?mode=listener&latency=200") }),
+    );
+    // Pas d'émetteur : aucun SourceStarted ne doit précéder les données.
+    assert!(
+        wait_event(&mut events, Duration::from_millis(1500), |t, d| {
+            (t == "SourceFailed" || t == "SourceStarted") && d["source_id"] == id
+        })
+        .is_none(),
+        "ni échec (port occupé) ni démarrage sans données"
+    );
+    let _sender = SrtSender::start(&format!("srt://127.0.0.1:{port}"));
+    let mut first = None;
+    wait_event(&mut events, Duration::from_secs(10), |t, d| {
+        let hit = (t == "SourceFailed" || t == "SourceStarted") && d["source_id"] == id;
+        if hit {
+            first = Some(t.to_string());
+        }
+        hit
+    });
+    assert_eq!(
+        first.as_deref(),
+        Some("SourceStarted"),
+        "SourceStarted attendu après la relance, sans échec"
+    );
+    engine.shutdown_captures();
+}
+
+/// Entrée SRT en appel : un émetteur qui disparaît (ou un hôte injoignable)
+/// donne `SourceFailed` et efface l'image, au lieu d'une image figée.
+#[test]
+fn srt_caller_reports_lost_stream() {
+    let engine = engine();
+    let mut events = engine.subscribe();
+    let port = free_udp_port();
+    let sender = SrtSender::start(&format!("srt://:{port}?mode=listener"));
+    std::thread::sleep(Duration::from_millis(500));
+    let added = call(
+        &engine,
+        "AddSource",
+        json!({ "scene": "Scène 1", "name": "SRT", "kind": "srt_input",
+                "url": format!("srt://127.0.0.1:{port}?mode=caller") }),
+    );
+    let id: Uuid = added["source"]["id"].as_str().unwrap().parse().unwrap();
+    let ids = id.to_string();
+    assert!(
+        wait_event(&mut events, Duration::from_secs(10), |t, d| {
+            t == "SourceStarted" && d["source_id"] == ids
+        })
+        .is_some(),
+        "SourceStarted attendu"
+    );
+    wait_for_frame(&engine, id);
+    drop(sender);
+    let failed = wait_event(&mut events, Duration::from_secs(20), |t, d| {
+        t == "SourceFailed" && d["source_id"] == ids
+    })
+    .expect("SourceFailed après la disparition de l'émetteur");
+    assert_eq!(failed["kind"], "srt_input");
+    assert!(
+        engine.media().frame(id).is_none(),
+        "plus d'image figée pendant la panne"
+    );
+    engine.shutdown_captures();
+}

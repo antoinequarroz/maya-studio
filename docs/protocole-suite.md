@@ -167,8 +167,9 @@ Chaque source porte aussi `volume` (gain linéaire de 0 à 2, 1 par défaut) et 
 Événements : `SourceAdded`, `SourceUpdated`, `SourceRemoved`, `SourceReordered`, et pour
 les sources de capture :
 
-- `SourceStarted` : `source_id`, `kind` — le pipeline de capture tourne (aussi après
-  une reprise) ;
+- `SourceStarted` : `source_id`, `kind` — la capture livre ses premières images ou son
+  premier son (aussi après une reprise) ; une entrée SRT en écoute sans émetteur ne
+  l'émet qu'à l'arrivée du flux ;
 - `SourceFailed` : `source_id`, `kind`, `error`, `retry_in_ms` — la capture a échoué
   (périphérique absent ou débranché, fichier illisible, flux SRT coupé) ; elle est
   relancée automatiquement après `retry_in_ms` (de 1 s à 30 s, délai doublé à chaque
