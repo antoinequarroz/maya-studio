@@ -45,6 +45,31 @@ impl Default for OutputConfig {
     }
 }
 
+/// Options de `GetScreenshot`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ScreenshotOptions {
+    pub jpeg: bool,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    /// Qualité JPEG de 1 à 100 (80 par défaut).
+    pub quality: Option<u8>,
+}
+
+impl ScreenshotOptions {
+    /// Taille de l'image rendue : celle demandée, sans dépasser le canvas. Avec une
+    /// seule dimension, l'autre suit le rapport largeur / hauteur du canvas.
+    pub fn size(&self, canvas: Canvas) -> Option<(u32, u32)> {
+        let (cw, ch) = (canvas.width.max(1), canvas.height.max(1));
+        let (w, h) = match (self.width, self.height) {
+            (None, None) => return None,
+            (Some(w), Some(h)) => (w, h),
+            (Some(w), None) => (w, (u64::from(w) * u64::from(ch) / u64::from(cw)) as u32),
+            (None, Some(h)) => ((u64::from(h) * u64::from(cw) / u64::from(ch)) as u32, h),
+        };
+        Some((w.clamp(1, cw), h.clamp(1, ch)))
+    }
+}
+
 /// Options d'une requête de démarrage de sortie (champs optionnels de l'API).
 #[derive(Debug, Clone, Default)]
 pub struct StartOptions {
@@ -63,6 +88,10 @@ struct ActiveOutput {
     /// Échantillons (par canal) déjà poussés dans `audio` : position de la piste audio.
     audio_pos: u64,
     started: Instant,
+    /// Début de la pause en cours (enregistrement seulement).
+    paused_since: Option<Instant>,
+    /// Durée cumulée des pauses terminées.
+    paused_total: Duration,
     /// Images envoyées à la sortie (y compris celles qu'elle a dû perdre).
     frames: u64,
     format: Option<RecordFormat>,
@@ -70,6 +99,26 @@ struct ActiveOutput {
 }
 
 impl ActiveOutput {
+    /// Durée enregistrée ou diffusée, pauses exclues.
+    fn duration(&self) -> Duration {
+        let paused = self.paused_total + self.paused_since.map_or(Duration::ZERO, |p| p.elapsed());
+        self.started.elapsed().saturating_sub(paused)
+    }
+
+    /// Champs d'état communs à `GetOutputStatus` et `OutputStopped`.
+    fn counters(&self, v: &mut Value) {
+        v["frames"] = json!(self.frames);
+        v["dropped_frames"] = json!(self.output.dropped_frames());
+        v["duration_s"] = json!(self.duration().as_secs_f64());
+        v["paused"] = json!(self.paused_since.is_some());
+        // Taille du fichier écrit (enregistrement) : permet de vérifier qu'il grossit.
+        if self.format.is_some() {
+            if let Ok(m) = std::fs::metadata(self.output.target()) {
+                v["bytes"] = json!(m.len());
+            }
+        }
+    }
+
     fn describe(&self, kind: OutputKind, backend: Backend) -> Value {
         let mut v = json!({
             "output": kind,
@@ -244,13 +293,7 @@ impl Engine {
     /// Met les pipelines de capture en accord avec les sources des scènes. Appelé
     /// après chaque changement d'état et au lancement de la boucle de rendu.
     pub fn sync_captures(&self) {
-        let wanted: Vec<(Uuid, SourceKind)> = self
-            .studio
-            .lock()
-            .unwrap()
-            .capture_sources()
-            .map(|s| (s.id, s.kind.clone()))
-            .collect();
+        let wanted: Vec<(Uuid, SourceKind)> = self.studio.lock().unwrap().capture_list();
         // Les états des captures retirées ou relancées ne servent plus.
         prune_capture_states(
             &mut self.capture_states.lock().unwrap(),
@@ -277,20 +320,19 @@ impl Engine {
     /// qu'aucune image ni aucun son n'est arrivé, puis `running` ou `failed`.
     pub fn capture_status(&self) -> Value {
         let running: HashSet<Uuid> = self.running_captures().into_iter().collect();
-        let kinds: Vec<(Uuid, Value)> = self
-            .studio
-            .lock()
-            .unwrap()
-            .capture_sources()
-            .filter(|s| running.contains(&s.id))
-            .map(|s| (s.id, serde_json::to_value(&s.kind).unwrap()["kind"].clone()))
-            .collect();
+        let (kinds, inputs): (Vec<(Uuid, Value)>, HashSet<Uuid>) = {
+            let studio = self.studio.lock().unwrap();
+            let kinds = studio
+                .capture_list()
+                .into_iter()
+                .filter(|(id, _)| running.contains(id))
+                .map(|(id, k)| (id, serde_json::to_value(&k).unwrap()["kind"].clone()))
+                .collect();
+            (kinds, studio.audio_inputs.iter().map(|i| i.id).collect())
+        };
         let states = self.capture_states.lock().unwrap();
-        let mut seen = HashSet::new();
         let sources: Vec<Value> = kinds
             .into_iter()
-            // Une même source peut apparaître dans plusieurs scènes : une seule entrée.
-            .filter(|(id, _)| seen.insert(*id))
             .map(|(id, kind)| {
                 let mut v = states
                     .get(&id)
@@ -298,6 +340,10 @@ impl Engine {
                     .unwrap_or_else(|| json!({ "state": "starting" }));
                 v["source_id"] = json!(id);
                 v["kind"] = kind;
+                // Entrée audio globale (`studio.mixer`) plutôt que source d'une scène.
+                if inputs.contains(&id) {
+                    v["input"] = json!(true);
+                }
                 v
             })
             .collect();
@@ -323,8 +369,13 @@ impl Engine {
         json!({ "video": [], "audio": [] })
     }
 
-    /// Image de la scène demandée (programme par défaut), encodée en PNG ou JPEG.
-    pub fn screenshot(&self, scene_key: Option<&str>, jpeg: bool) -> Result<Vec<u8>, String> {
+    /// Image de la scène demandée (programme par défaut), encodée en PNG ou JPEG,
+    /// éventuellement réduite (miniatures de Nino).
+    pub fn screenshot(
+        &self,
+        scene_key: Option<&str>,
+        opts: ScreenshotOptions,
+    ) -> Result<Vec<u8>, String> {
         let (canvas, scene) = {
             let studio = self.studio.lock().unwrap();
             let scene = match scene_key {
@@ -339,16 +390,24 @@ impl Engine {
             self.frame_count(),
             &*self.media,
         );
+        let mut img = image::DynamicImage::ImageRgba8(img).to_rgb8();
+        if let Some((w, h)) = opts.size(canvas) {
+            if (w, h) != (canvas.width, canvas.height) {
+                img = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
+            }
+        }
         let mut out = std::io::Cursor::new(Vec::new());
-        let fmt = if jpeg {
-            image::ImageFormat::Jpeg
-        } else {
-            image::ImageFormat::Png
-        };
-        image::DynamicImage::ImageRgba8(img)
-            .to_rgb8()
-            .write_to(&mut out, fmt)
+        if opts.jpeg {
+            image::codecs::jpeg::JpegEncoder::new_with_quality(
+                &mut out,
+                opts.quality.unwrap_or(80),
+            )
+            .encode_image(&img)
             .map_err(|e| e.to_string())?;
+        } else {
+            img.write_to(&mut out, image::ImageFormat::Png)
+                .map_err(|e| e.to_string())?;
+        }
         Ok(out.into_inner())
     }
 
@@ -446,6 +505,8 @@ impl Engine {
             output,
             canvas,
             started: Instant::now(),
+            paused_since: None,
+            paused_total: Duration::ZERO,
             frames: 0,
             format,
             bitrate_kbps,
@@ -503,9 +564,7 @@ impl Engine {
             .remove(&kind)
             .ok_or("output_not_active")?;
         let mut data = active.describe(kind, self.output_config.backend);
-        data["frames"] = json!(active.frames);
-        data["dropped_frames"] = json!(active.output.dropped_frames());
-        data["duration_s"] = json!(active.started.elapsed().as_secs_f64());
+        active.counters(&mut data);
         let finalized = active.output.stop();
         data["finalized"] = json!(finalized.is_ok());
         if let Err(e) = finalized {
@@ -523,9 +582,7 @@ impl Engine {
             Some(a) => {
                 let mut v = a.describe(k, backend);
                 v["active"] = json!(true);
-                v["frames"] = json!(a.frames);
-                v["dropped_frames"] = json!(a.output.dropped_frames());
-                v["duration_s"] = json!(a.started.elapsed().as_secs_f64());
+                a.counters(&mut v);
                 v
             }
             None if outputs.starting.contains(&k) => json!({ "active": false, "starting": true }),
@@ -536,6 +593,42 @@ impl Engine {
             "record": status(OutputKind::Record),
             "stream": status(OutputKind::Stream),
         })
+    }
+
+    /// Met l'enregistrement en pause ou le reprend. Pendant la pause, aucune image
+    /// ni aucun son n'est poussé : les horodatages des sorties suivent leurs propres
+    /// compteurs, le fichier reprend donc sans trou ni saut.
+    pub fn set_record_paused(&self, paused: bool) -> Result<Value, String> {
+        let data = {
+            let mut outputs = self.outputs.lock().unwrap();
+            let active = outputs
+                .active
+                .get_mut(&OutputKind::Record)
+                .ok_or("output_not_active")?;
+            match (paused, active.paused_since) {
+                (true, Some(_)) => return Err("output_paused".into()),
+                (false, None) => return Err("output_not_paused".into()),
+                (true, None) => active.paused_since = Some(Instant::now()),
+                (false, Some(since)) => {
+                    active.paused_total += since.elapsed();
+                    active.paused_since = None;
+                }
+            }
+            json!({
+                "output": OutputKind::Record,
+                "paused": paused,
+                "duration_s": active.duration().as_secs_f64(),
+            })
+        };
+        self.emit(
+            if paused {
+                "RecordingPaused"
+            } else {
+                "RecordingResumed"
+            },
+            data.clone(),
+        );
+        Ok(data)
     }
 
     pub fn has_active_outputs(&self) -> bool {
@@ -590,7 +683,7 @@ impl Engine {
                             for (kind, active) in outputs.active.iter_mut() {
                                 // Image rendue avec un autre canvas que celui de la
                                 // sortie (course au démarrage) : on ne la pousse pas.
-                                if active.canvas != canvas {
+                                if active.canvas != canvas || active.paused_since.is_some() {
                                     continue;
                                 }
                                 if let Err(e) = active.output.push_frame(&buf) {
@@ -627,6 +720,9 @@ impl Engine {
                 let Some(audio) = &active.audio else {
                     continue;
                 };
+                if active.paused_since.is_some() {
+                    continue;
+                }
                 let Some(silence) =
                     mixer::plan_block(active.frames, active.canvas.fps, active.audio_pos)
                 else {
@@ -666,21 +762,42 @@ impl Engine {
                 let mut blocks: u64 = 0;
                 let mut next = Instant::now();
                 loop {
-                    // Réglages audio : (volume, coupé, audible).
-                    let settings: HashMap<Uuid, (f32, bool, bool)> = {
+                    let settings: HashMap<Uuid, AudioSetting> = {
                         let s = engine.studio.lock().unwrap();
                         let program = s.program_scene;
-                        s.scenes
+                        let mut map: HashMap<Uuid, AudioSetting> = s
+                            .scenes
                             .iter()
                             .flat_map(|sc| {
                                 sc.sources
                                     .iter()
                                     .filter(|x| x.kind.has_audio())
                                     .map(move |x| {
-                                        (x.id, (x.volume, x.muted, sc.id == program && x.visible))
+                                        (
+                                            x.id,
+                                            AudioSetting {
+                                                volume: x.volume,
+                                                muted: x.muted,
+                                                audible: sc.id == program && x.visible,
+                                                input: false,
+                                            },
+                                        )
                                     })
                             })
-                            .collect()
+                            .collect();
+                        // Les entrées globales partent toujours dans le mix.
+                        for i in &s.audio_inputs {
+                            map.insert(
+                                i.id,
+                                AudioSetting {
+                                    volume: i.volume,
+                                    muted: i.muted,
+                                    audible: true,
+                                    input: true,
+                                },
+                            );
+                        }
+                        map
                     };
                     bus.clear();
                     for (id, media) in engine.media.audio_sources() {
@@ -690,12 +807,12 @@ impl Engine {
                         // Toutes les files sont vidées, même hors antenne, pour qu'une
                         // source reparte sans retard quand sa scène passe à l'antenne.
                         audio.pull(&mut input);
-                        let Some(&(volume, muted, audible)) = settings.get(&id) else {
+                        let Some(set) = settings.get(&id) else {
                             continue;
                         };
-                        meters.entry(id).or_default().add(&input, volume);
-                        if audible {
-                            bus.add_source(&input, volume, muted);
+                        meters.entry(id).or_default().add(&input, set.volume);
+                        if set.audible {
+                            bus.add_source(&input, set.volume, set.muted);
                         }
                     }
                     bus.output(&mut block);
@@ -723,7 +840,7 @@ impl Engine {
     fn emit_levels(
         &self,
         meters: &mut HashMap<Uuid, LevelMeter>,
-        settings: &HashMap<Uuid, (f32, bool, bool)>,
+        settings: &HashMap<Uuid, AudioSetting>,
     ) {
         if meters.is_empty() || self.events.receiver_count() == 0 {
             for m in meters.values_mut() {
@@ -731,22 +848,51 @@ impl Engine {
             }
             return;
         }
-        let sources: Vec<Value> = meters
-            .iter_mut()
-            .map(|(id, m)| {
-                let l = m.take();
-                let (_, muted, audible) = settings.get(id).copied().unwrap_or_default();
-                json!({
-                    "source_id": id,
-                    "peak_db": l.peak_db.map(mixer::round_db),
-                    "rms_db": l.rms_db.map(mixer::round_db),
-                    "muted": muted,
-                    "audible": audible,
-                })
-            })
-            .collect();
-        self.emit("InputLevels", json!({ "sources": sources }));
+        let (sources, inputs) = levels_payload(meters, settings);
+        self.emit(
+            "InputLevels",
+            json!({ "sources": sources, "inputs": inputs }),
+        );
     }
+}
+
+/// Réglages audio d'une source ou d'une entrée, lus à chaque bloc de mixage.
+#[derive(Debug, Clone, Copy, Default)]
+struct AudioSetting {
+    volume: f32,
+    muted: bool,
+    /// Part dans le mix : source visible de la scène programme, ou entrée globale.
+    audible: bool,
+    /// Entrée audio globale (`studio.mixer`).
+    input: bool,
+}
+
+/// Données de `InputLevels` : sources des scènes (`sources`, clé `source_id`) et
+/// entrées audio globales (`inputs`, clé `input_id`).
+fn levels_payload(
+    meters: &mut HashMap<Uuid, LevelMeter>,
+    settings: &HashMap<Uuid, AudioSetting>,
+) -> (Vec<Value>, Vec<Value>) {
+    let mut sources = Vec::new();
+    let mut inputs = Vec::new();
+    for (id, m) in meters.iter_mut() {
+        let l = m.take();
+        let set = settings.get(id).copied().unwrap_or_default();
+        let mut v = json!({
+            "peak_db": l.peak_db.map(mixer::round_db),
+            "rms_db": l.rms_db.map(mixer::round_db),
+            "muted": set.muted,
+            "audible": set.audible,
+        });
+        if set.input {
+            v["input_id"] = json!(id);
+            inputs.push(v);
+        } else {
+            v["source_id"] = json!(id);
+            sources.push(v);
+        }
+    }
+    (sources, inputs)
 }
 
 #[cfg(test)]
@@ -899,5 +1045,41 @@ mod tests {
             "shutting_down"
         );
         assert!(engine.outputs.lock().unwrap().is_idle());
+    }
+
+    #[test]
+    fn levels_split_sources_and_inputs() {
+        let (src, inp) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut meters: HashMap<Uuid, LevelMeter> = HashMap::new();
+        meters.entry(src).or_default().add(&[1000, 1000], 1.0);
+        meters.entry(inp).or_default().add(&[1000, 1000], 1.0);
+        let settings = HashMap::from([
+            (
+                src,
+                AudioSetting {
+                    volume: 1.0,
+                    muted: false,
+                    audible: false,
+                    input: false,
+                },
+            ),
+            (
+                inp,
+                AudioSetting {
+                    volume: 1.0,
+                    muted: true,
+                    audible: true,
+                    input: true,
+                },
+            ),
+        ]);
+        let (sources, inputs) = levels_payload(&mut meters, &settings);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0]["source_id"], json!(src));
+        assert_eq!(sources[0]["audible"], false);
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0]["input_id"], json!(inp));
+        assert_eq!(inputs[0]["muted"], true);
+        assert!(inputs[0].get("source_id").is_none());
     }
 }

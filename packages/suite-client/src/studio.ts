@@ -113,7 +113,22 @@ export type Source = {
   volume?: number;
   /** Son coupé (faux par défaut). */
   muted?: boolean;
+  /** Métadonnées libres du client qui a créé la source (objet JSON, 4 Kio au plus). */
+  meta?: SourceMeta;
 } & SourceKind;
+
+/** Métadonnées libres d'une source ou d'une entrée audio, conservées telles quelles. */
+export type SourceMeta = Record<string, unknown>;
+
+/** Entrée audio globale (`studio.mixer`) : part toujours dans le mix, quelle que soit la scène. */
+export type AudioInput = {
+  id: Uuid;
+  name: string;
+  /** Gain linéaire de 0 à {@link MAX_VOLUME}. */
+  volume: number;
+  muted: boolean;
+  meta?: SourceMeta;
+} & { kind: "audio_input"; device_id?: string };
 
 /** Une scène : pile ordonnée de sources, la première est dessinée en dessous. */
 export interface Scene {
@@ -128,6 +143,8 @@ export interface StudioState {
   scenes: Scene[];
   program_scene: Uuid;
   preview_scene: Uuid;
+  /** Entrées audio globales ; absent avec un moteur antérieur à `studio.mixer`. */
+  audio_inputs?: AudioInput[];
 }
 
 export interface SceneSummary {
@@ -164,7 +181,19 @@ export interface OutputState extends Partial<Omit<OutputStartedData, "output">> 
   starting?: boolean;
   frames?: number;
   dropped_frames?: number;
+  /** Durée enregistrée ou diffusée, pauses exclues. */
   duration_s?: number;
+  /** Enregistrement en pause (`PauseRecording`). */
+  paused?: boolean;
+  /** Taille actuelle du fichier enregistré, en octets (enregistrement seulement). */
+  bytes?: number;
+}
+
+/** Données de `PauseRecording` / `ResumeRecording`, `RecordingPaused` / `RecordingResumed`. */
+export interface RecordingPauseData {
+  output: "record";
+  paused: boolean;
+  duration_s: number;
 }
 
 export interface OutputStatus {
@@ -180,6 +209,8 @@ export interface OutputStoppedData extends OutputStartedData {
   /** Vrai si le fichier a été finalisé proprement. */
   finalized?: boolean;
   warning?: string;
+  paused?: boolean;
+  bytes?: number;
 }
 
 /** Options de `StartRecording` (toutes optionnelles). */
@@ -234,10 +265,10 @@ export interface InputDevices {
 /** Types de source qui émettent `SourceStarted` / `SourceFailed`. */
 export type CaptureKindName = Exclude<SourceKindName, "color" | "image" | "test_pattern">;
 
-/** État d'une capture (`GetCaptureStatus`). */
+/** État d'une capture (`GetCaptureStatus`). `input` : entrée audio globale (`studio.mixer`). */
 export type CaptureState =
-  | { source_id: Uuid; kind: CaptureKindName; state: "starting" | "running" }
-  | { source_id: Uuid; kind: CaptureKindName; state: "failed"; error: string; retry_in_ms: number };
+  | { source_id: Uuid; kind: CaptureKindName; input?: true; state: "starting" | "running" }
+  | { source_id: Uuid; kind: CaptureKindName; input?: true; state: "failed"; error: string; retry_in_ms: number };
 
 export interface SourceStartedData {
   source_id: Uuid;
@@ -264,9 +295,23 @@ export interface SourceLevels {
   audible: boolean;
 }
 
+/** Niveaux d'une entrée audio globale ; `audible` est toujours vrai. */
+export interface AudioInputLevels extends Omit<SourceLevels, "source_id"> {
+  input_id: Uuid;
+}
+
 export interface InputLevelsData {
   sources: SourceLevels[];
+  /** Entrées audio globales ; absent avec un moteur antérieur à `studio.mixer`. */
+  inputs?: AudioInputLevels[];
 }
+
+/** Données de `UpdateAudioInput` : seuls les champs présents changent. */
+export type AudioInputPatch = {
+  name?: string;
+  /** `null` efface les métadonnées. */
+  meta?: SourceMeta | null;
+} & ({ kind: "audio_input"; device_id?: string } | { kind?: undefined });
 
 export interface OutputFailedData {
   output: OutputKind;
@@ -281,6 +326,8 @@ export type SourcePatch = {
   /** Gain linéaire de 0 à 2. */
   volume?: number;
   muted?: boolean;
+  /** Remplace les métadonnées ; `null` les efface. */
+  meta?: SourceMeta | null;
 } & (SourceKind | { kind?: undefined });
 
 /** Spécification d'une requête : données envoyées et données de la réponse. */
@@ -308,7 +355,7 @@ export interface StudioRequests {
   SetCanvas: RequestSpec<Canvas, Canvas>;
   // studio.sources
   AddSource: RequestSpec<
-    { scene: string; name: string; transform?: Transform } & SourceKind,
+    { scene: string; name: string; transform?: Transform; meta?: SourceMeta } & SourceKind,
     { scene_id: Uuid; source: Source }
   >;
   RemoveSource: RequestSpec<{ scene: string; source: string }, { scene_id: Uuid; source_id: Uuid }>;
@@ -316,10 +363,15 @@ export interface StudioRequests {
   MoveSource: RequestSpec<{ scene: string; source: string; index: number }, { scene_id: Uuid; source_ids: Uuid[] }>;
   GetCaptureStatus: RequestSpec<void, { sources: CaptureState[] }>;
   // studio.preview
-  GetScreenshot: RequestSpec<{ scene?: string; format?: "png" | "jpeg" } | void, { image: string }>;
+  GetScreenshot: RequestSpec<
+    { scene?: string; format?: "png" | "jpeg"; width?: number; height?: number; quality?: number } | void,
+    { image: string }
+  >;
   // studio.outputs
   StartRecording: RequestSpec<StartRecordingData | void, OutputStartedData>;
   StopRecording: RequestSpec<void, OutputStoppedData>;
+  PauseRecording: RequestSpec<void, RecordingPauseData>;
+  ResumeRecording: RequestSpec<void, RecordingPauseData>;
   StartStream: RequestSpec<StartStreamData, OutputStartedData>;
   StopStream: RequestSpec<void, OutputStoppedData>;
   GetOutputStatus: RequestSpec<void, OutputStatus>;
@@ -336,6 +388,16 @@ export interface StudioRequests {
     { scene: string; source: string; muted: boolean },
     { scene_id: Uuid; source_id: Uuid; muted: boolean }
   >;
+  // studio.mixer
+  GetAudioInputs: RequestSpec<void, { inputs: AudioInput[] }>;
+  CreateAudioInput: RequestSpec<
+    { name: string; kind?: "audio_input"; device_id?: string; volume?: number; muted?: boolean; meta?: SourceMeta },
+    { input: AudioInput }
+  >;
+  RemoveAudioInput: RequestSpec<{ input: string }, { input_id: Uuid }>;
+  UpdateAudioInput: RequestSpec<{ input: string } & AudioInputPatch, { input: AudioInput }>;
+  SetAudioInputVolume: RequestSpec<{ input: string; volume: number }, { input_id: Uuid; volume: number }>;
+  SetAudioInputMuted: RequestSpec<{ input: string; muted: boolean }, { input_id: Uuid; muted: boolean }>;
 }
 
 export type StudioRequestType = keyof StudioRequests;
@@ -360,6 +422,13 @@ export interface StudioEvents {
   OutputStarted: OutputStartedData;
   OutputStopped: OutputStoppedData;
   OutputFailed: OutputFailedData;
+  RecordingPaused: RecordingPauseData;
+  RecordingResumed: RecordingPauseData;
+  AudioInputCreated: { input: AudioInput };
+  AudioInputRemoved: { input_id: Uuid };
+  AudioInputUpdated: { input: AudioInput };
+  AudioInputVolumeChanged: { input_id: Uuid; volume: number };
+  AudioInputMuteChanged: { input_id: Uuid; muted: boolean };
 }
 
 export type StudioEventType = keyof StudioEvents;
@@ -387,6 +456,8 @@ export const STUDIO_REQUEST_CAPABILITIES: Readonly<Record<StudioRequestType, str
   GetScreenshot: "studio.preview",
   StartRecording: "studio.outputs",
   StopRecording: "studio.outputs",
+  PauseRecording: "studio.outputs",
+  ResumeRecording: "studio.outputs",
   StartStream: "studio.outputs",
   StopStream: "studio.outputs",
   GetOutputStatus: "studio.outputs",
@@ -394,6 +465,12 @@ export const STUDIO_REQUEST_CAPABILITIES: Readonly<Record<StudioRequestType, str
   GetInputDevices: "studio.inputs",
   SetSourceVolume: "studio.audio",
   SetSourceMuted: "studio.audio",
+  GetAudioInputs: "studio.mixer",
+  CreateAudioInput: "studio.mixer",
+  RemoveAudioInput: "studio.mixer",
+  UpdateAudioInput: "studio.mixer",
+  SetAudioInputVolume: "studio.mixer",
+  SetAudioInputMuted: "studio.mixer",
 });
 
 /** Domaines annoncés par le moteur (miroir de `CAPABILITIES` dans api.rs). */
@@ -406,6 +483,7 @@ export const STUDIO_CAPABILITIES: readonly string[] = Object.freeze([
   "studio.preview",
   "studio.inputs",
   "studio.audio",
+  "studio.mixer",
 ]);
 
 /** Liste des requêtes connues, dans l'ordre de `REQUESTS` (api.rs). */
@@ -430,6 +508,13 @@ export const STUDIO_EVENTS: readonly StudioEventType[] = Object.freeze([
   "OutputStarted",
   "OutputStopped",
   "OutputFailed",
+  "RecordingPaused",
+  "RecordingResumed",
+  "AudioInputCreated",
+  "AudioInputRemoved",
+  "AudioInputUpdated",
+  "AudioInputVolumeChanged",
+  "AudioInputMuteChanged",
 ]);
 
 /** Codes d'erreur propres au studio. */
@@ -449,6 +534,12 @@ export const StudioErrorCode = {
   InvalidBitrate: "invalid_bitrate",
   ShuttingDown: "shutting_down",
   InvalidVolume: "invalid_volume",
+  OutputPaused: "output_paused",
+  OutputNotPaused: "output_not_paused",
+  InputNotFound: "input_not_found",
+  InputNameTaken: "input_name_taken",
+  InvalidInputKind: "invalid_input_kind",
+  InvalidMeta: "invalid_meta",
 } as const;
 
 /**
@@ -580,9 +671,43 @@ export function applyStudioEvent(state: StudioState, type: string, data: unknown
       const { scene_id, source_id, muted } = data as StudioEvents["SourceMuteChanged"];
       return mapSource(state, scene_id, source_id, (x) => (x.muted === muted ? x : { ...x, muted }));
     }
+    case "AudioInputCreated": {
+      const { input } = data as StudioEvents["AudioInputCreated"];
+      const inputs = state.audio_inputs ?? [];
+      if (inputs.some((i) => i.id === input.id)) return state;
+      return { ...state, audio_inputs: [...inputs, input] };
+    }
+    case "AudioInputRemoved": {
+      const { input_id } = data as StudioEvents["AudioInputRemoved"];
+      const inputs = state.audio_inputs ?? [];
+      if (!inputs.some((i) => i.id === input_id)) return state;
+      return { ...state, audio_inputs: inputs.filter((i) => i.id !== input_id) };
+    }
+    case "AudioInputUpdated": {
+      const { input } = data as StudioEvents["AudioInputUpdated"];
+      return mapInput(state, input.id, () => input);
+    }
+    case "AudioInputVolumeChanged": {
+      const { input_id, volume } = data as StudioEvents["AudioInputVolumeChanged"];
+      return mapInput(state, input_id, (i) => (i.volume === volume ? i : { ...i, volume }));
+    }
+    case "AudioInputMuteChanged": {
+      const { input_id, muted } = data as StudioEvents["AudioInputMuteChanged"];
+      return mapInput(state, input_id, (i) => (i.muted === muted ? i : { ...i, muted }));
+    }
     default:
       return state;
   }
+}
+
+/** Applique `f` à une entrée audio globale ; renvoie le même état si rien ne change. */
+function mapInput(state: StudioState, inputId: Uuid, f: (input: AudioInput) => AudioInput): StudioState {
+  const inputs = state.audio_inputs ?? [];
+  const input = inputs.find((i) => i.id === inputId);
+  if (!input) return state;
+  const next = f(input);
+  if (next === input) return state;
+  return { ...state, audio_inputs: inputs.map((i) => (i.id === inputId ? next : i)) };
 }
 
 /** Applique `f` à une source ; renvoie le même état si rien ne change. */

@@ -150,6 +150,33 @@ pub struct Source {
     /// Son coupé.
     #[serde(default)]
     pub muted: bool,
+    /// Métadonnées libres du client qui a créé la source (objet JSON, voir
+    /// [`MAX_META_BYTES`]). Le studio les conserve sans les interpréter : Nino s'en
+    /// sert pour reconnaître ses propres sources (médias, invités).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
+}
+
+/// Taille maximale des métadonnées d'une source ou d'une entrée audio, en JSON.
+pub const MAX_META_BYTES: usize = 4096;
+
+/// Entrée audio globale du studio (domaine `studio.mixer`) : un micro qui ne
+/// dépend d'aucune scène, comme une tranche de console. Elle part toujours dans
+/// le mix (sauf si elle est coupée), quelle que soit la scène à l'antenne.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AudioInput {
+    pub id: Uuid,
+    pub name: String,
+    /// Toujours `audio_input` pour l'instant ; d'autres types pourront suivre.
+    #[serde(flatten)]
+    pub kind: SourceKind,
+    /// Gain audio linéaire, de 0.0 à [`MAX_VOLUME`] (1.0 = inchangé).
+    #[serde(default = "one")]
+    pub volume: f32,
+    #[serde(default)]
+    pub muted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<serde_json::Value>,
 }
 
 /// Une scène est une pile ordonnée de sources : la première est dessinée en dessous.

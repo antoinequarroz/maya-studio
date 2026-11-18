@@ -1,5 +1,8 @@
 # Protocole Suite Media — v1
 
+> Révision 1.1 (novembre 2026) : ajouts compatibles pour Nino, voir
+> [besoins-nino.md](besoins-nino.md). Un client v1 continue de fonctionner sans changement.
+
 Ce protocole est le **contrat commun à toutes les apps de la Suite Media** : le Studio,
 Nino (régie automatique), les futures apps mobiles de capture et le studio web.
 Chaque app expose un serveur WebSocket qui parle exactement ce protocole ; une app
@@ -33,7 +36,7 @@ Le code de référence est le crate Rust `crates/suite-protocol`. Toute app de l
 serveur → {"op":"hello","app":{"id":"studio","name":"Maya Studio","version":"0.1.0"},
            "protocol":1,"auth_required":true,
            "capabilities":["core","studio.scenes","studio.sources","studio.outputs","studio.encoders","studio.preview",
-                           "studio.inputs","studio.audio"]}
+                           "studio.inputs","studio.audio","studio.mixer"]}
 
 client  → {"op":"identify","token":"…","name":"Nino plateau 1",
            "app":{"id":"nino","name":"Nino","version":"0.3.0"},"events":true}
@@ -43,7 +46,9 @@ serveur → {"op":"identified","client_id":"1"}
 
 - `protocol` : version majeure. Un client refuse un serveur dont la version majeure diffère.
 - `capabilities` : domaines proposés. Un client teste un domaine avant de l'utiliser,
-  ce qui permet à deux apps de versions différentes de rester compatibles.
+  ce qui permet à deux apps de versions différentes de rester compatibles. Une requête
+  ajoutée à un domaine existant (par exemple `PauseRecording`) se teste avec
+  `GetRequestList`.
 - `events: false` : le client ne reçoit pas les événements (utile pour un script ponctuel).
 - Toute requête envoyée avant `identified` reçoit l'erreur `not_identified`.
 
@@ -127,8 +132,8 @@ traiter dans une seule boucle.
 
 | Requête | Données |
 |---|---|
-| `AddSource` | `scene`, `name`, `kind` + réglages, `transform` optionnel |
-| `UpdateSource` | `scene`, `source`, puis au choix `name`, `visible`, `transform`, `volume`, `muted`, `kind` + réglages |
+| `AddSource` | `scene`, `name`, `kind` + réglages, `transform` optionnel, `meta` optionnel |
+| `UpdateSource` | `scene`, `source`, puis au choix `name`, `visible`, `transform`, `volume`, `muted`, `meta`, `kind` + réglages |
 | `RemoveSource` | `scene`, `source` |
 | `MoveSource` | `scene`, `source`, `index` (0 = tout en dessous) |
 | `GetCaptureStatus` | — (état des captures en cours, voir plus bas) |
@@ -165,6 +170,12 @@ Chaque source porte aussi `volume` (gain linéaire de 0 à 2, 1 par défaut) et 
 
 `transform` : `x`, `y`, `width`, `height` en pixels du canvas, `opacity` de 0 à 1.
 
+`meta` *(v1.1)* : objet JSON libre, 4 Kio au plus une fois sérialisé, conservé tel quel
+par le studio et renvoyé avec la source. Il permet à un client de reconnaître les
+sources qu'il a créées (Nino y range par exemple `nino_owner`, `nino_project`) et de
+ne jamais toucher celles de l'opérateur. Dans `UpdateSource`, `meta` remplace l'objet
+entier et `meta: null` l'efface. Code d'erreur : `invalid_meta` (pas un objet, ou trop gros).
+
 Événements : `SourceAdded`, `SourceUpdated`, `SourceRemoved`, `SourceReordered`, et pour
 les sources de capture :
 
@@ -193,6 +204,8 @@ pour `failed`, `error` et `retry_in_ms` du dernier échec.
 |---|---|
 | `StartRecording` | `path` optionnel, `format` optionnel (`mp4` par défaut ou `mkv`, sinon déduit de l'extension de `path`), `fragmented` optionnel (MP4 fragmenté, lisible même après un arrêt brutal), `bitrate_kbps` optionnel (6000 par défaut) |
 | `StopRecording` | — |
+| `PauseRecording` *(v1.1)* | — |
+| `ResumeRecording` *(v1.1)* | — |
 | `StartStream` | `url` (`rtmp://…/clé`, `rtmps://…/clé` ou `srt://hôte:port`), `bitrate_kbps` optionnel (4500 par défaut) |
 | `StopStream` | — |
 | `GetOutputStatus` | — |
@@ -209,23 +222,36 @@ Réponse de `StartRecording` / `StartStream` et données de `OutputStarted` :
 ```
 
 `StopRecording` / `StopStream` et `OutputStopped` ajoutent `frames`, `dropped_frames`,
-`duration_s`, `finalized` (vrai si le fichier a été finalisé proprement) et, en cas de
-problème, `warning`.
+`duration_s`, `paused`, `bytes` (enregistrement), `finalized` (vrai si le fichier a été
+finalisé proprement) et, en cas de problème, `warning`.
 
 `GetOutputStatus` :
 
 ```json
 {"backend":"gstreamer",
  "record":{"active":true,"target":"…","encoder":"vtenc_h264_hw","bitrate_kbps":6000,"format":"mp4",
-           "frames":912,"dropped_frames":0,"duration_s":30.4},
+           "frames":912,"dropped_frames":0,"duration_s":30.4,"paused":false,"bytes":18874368},
  "stream":{"active":false}}
 ```
 
 `dropped_frames` compte les images perdues parce que l'encodeur ou le réseau ne suivait pas :
-la boucle de rendu n'attend jamais une sortie. Une sortie en cours de démarrage (pipeline
+la boucle de rendu n'attend jamais une sortie. `duration_s` exclut les pauses. `bytes`
+*(v1.1)* est la taille actuelle du fichier enregistré (enregistrement seulement) : un
+client peut vérifier qu'elle grossit.
+
+**Pause** *(v1.1)* : `PauseRecording` arrête d'envoyer images et son à l'enregistrement,
+`ResumeRecording` reprend. Le fichier ne contient ni trou ni saut : la reprise suit
+directement l'image d'avant la pause. La diffusion n'a pas de pause. Réponse et données
+des événements `RecordingPaused` / `RecordingResumed` :
+
+```json
+{"output":"record","paused":true,"duration_s":12.4}
+``` Une sortie en cours de démarrage (pipeline
 en construction) apparaît avec `"active":false,"starting":true`.
 
 Codes d'erreur : `output_already_active` (sortie active ou en démarrage), `output_not_active`,
+`output_paused` (pause demandée alors que l'enregistrement est déjà en pause),
+`output_not_paused` (reprise demandée sans pause),
 `missing_url`, `unsupported_url`, `invalid_bitrate`, `shutting_down` (studiod est en train de
 s'arrêter), `output_error` (détail dans `message`, par exemple encodeur introuvable).
 
@@ -297,23 +323,83 @@ Codes d'erreur : `invalid_volume` (hors de 0..2), `scene_not_found`, `source_not
 
 - `SourceVolumeChanged` : `scene_id`, `source_id`, `volume` ;
 - `SourceMuteChanged` : `scene_id`, `source_id`, `muted` ;
-- `InputLevels` (environ 10 fois par seconde, seulement s'il y a des sources audio) :
+- `InputLevels` (environ 10 fois par seconde, seulement s'il y a des sources ou des entrées audio) :
   niveaux sur les 100 dernières ms, après le volume, en dBFS par canal (gauche, droite),
   arrondis au dixième, plancher à -100 pour le silence. `muted` et `audible` (la source
   part dans le mix) permettent d'afficher un VU-mètre grisé.
 
 ```json
 {"sources":[{"source_id":"…","peak_db":[-6.1,-6.0],"rms_db":[-9.1,-9.0],
-             "muted":false,"audible":true}]}
+             "muted":false,"audible":true}],
+ "inputs":[{"input_id":"…","peak_db":[-20.3,-20.1],"rms_db":[-26.0,-25.8],
+            "muted":false,"audible":true}]}
 ```
+
+`inputs` *(v1.1)* porte les niveaux des entrées audio globales (voir `studio.mixer`) ;
+un client v1 l'ignore. Les niveaux sont mesurés même pour une source hors antenne ou
+coupée.
 
 Un client qui n'affiche pas de VU-mètres peut ignorer `InputLevels` (ou s'identifier avec
 `events: false` s'il n'a besoin d'aucun événement).
+
+### `studio.mixer` *(v1.1)*
+
+Entrées audio **globales** : un micro déclaré une fois pour tout le studio, comme une
+tranche de console. Une entrée part toujours dans le mix, quelle que soit la scène à
+l'antenne, sauf si elle est coupée. Son nom est unique : un client peut la désigner par
+son nom ou par son identifiant. Les sources audio des scènes (`studio.sources`) restent
+là pour le son qui doit suivre l'image.
+
+| Requête | Données | Réponse |
+|---|---|---|
+| `GetAudioInputs` | — | `inputs` |
+| `CreateAudioInput` | `name`, `kind` optionnel (`audio_input`, seul type pour l'instant), `device_id` optionnel, `volume` optionnel (1 par défaut), `muted` optionnel, `meta` optionnel | `input` |
+| `UpdateAudioInput` | `input`, puis au choix `name`, `meta`, ou `kind: "audio_input"` + `device_id` pour changer de périphérique | `input` |
+| `RemoveAudioInput` | `input` | `input_id` |
+| `SetAudioInputVolume` | `input`, `volume` (0 à 2) | `input_id`, `volume` |
+| `SetAudioInputMuted` | `input`, `muted` | `input_id`, `muted` |
+
+Une entrée :
+
+```json
+{"id":"…","name":"Micro Anne","kind":"audio_input","device_id":"alsa_input.usb-Focusrite-00",
+ "volume":1.0,"muted":false,"meta":{"nino_participant":"p1"}}
+```
+
+`GetStudio` contient aussi `audio_inputs`. La capture d'une entrée apparaît dans
+`GetCaptureStatus` avec `"input":true`, et émet `SourceStarted` / `SourceFailed` avec
+son identifiant dans `source_id`.
+
+Événements : `AudioInputCreated` (`input`), `AudioInputRemoved` (`input_id`),
+`AudioInputUpdated` (`input`), `AudioInputVolumeChanged` (`input_id`, `volume`),
+`AudioInputMuteChanged` (`input_id`, `muted`). Les niveaux arrivent dans `InputLevels.inputs`.
+
+Codes d'erreur : `input_not_found`, `input_name_taken`, `invalid_input_kind`,
+`invalid_volume`, `invalid_meta`.
 
 ### `studio.preview`
 
 | Requête | Données |
 |---|---|
-| `GetScreenshot` | `scene` optionnelle (programme par défaut), `format` `png` ou `jpeg` |
+| `GetScreenshot` | `scene` optionnelle (programme par défaut), `format` `png` ou `jpeg`, et *(v1.1)* `width`, `height`, `quality` optionnels |
 
 Réponse : `image` en data URL.
+
+*(v1.1)* `width` / `height` réduisent l'image (jamais au-delà du canvas). Avec une seule
+dimension, l'autre suit le rapport du canvas. `quality` (1 à 100, 80 par défaut) règle la
+compression JPEG. Pour une miniature : `{"format":"jpeg","width":320,"quality":65}`.
+
+---
+
+# Ajouts prévus pour Nino (pas encore implémentés)
+
+Ces ajouts sont décrits dans [besoins-nino.md](besoins-nino.md). Ils resteront compatibles
+avec la v1.
+
+- **Lecture de médias pilotée** : `MediaAction` (`source`, `action` parmi `restart`,
+  `pause`, `resume`, `stop`), `GetMediaStatus` (`state` parmi `playing`, `paused`,
+  `ended`, `stopped`, plus `position_ms`, `duration_ms`), événement `MediaEnded`.
+- **Invités à distance** : type de source `browser` (page web avec son), sortie
+  « retour vidéo » pour les invités, réglage de retour casque par source (avec MAYA-101).
+- **Diffusion** : `reconnecting` dans `GetOutputStatus` et événement de reconnexion (MAYA-115).
+- **Découverte** : annonce mDNS `_suitemedia._tcp` (MAYA-102).

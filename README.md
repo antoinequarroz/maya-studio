@@ -58,6 +58,7 @@ tools/
   demo-client.mjs   client de démo (fait ce que Nino fera)
 docs/
   protocole-suite.md
+  besoins-nino.md   ce que Nino attend du studio, et où en est le protocole
 ```
 
 L'interface ne parle au moteur **que** par l'API WebSocket, comme Nino : le même front-end

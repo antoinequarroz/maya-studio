@@ -3,9 +3,11 @@
 use base64::Engine as _;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use studio_core::{Canvas, Change, SourceKind, SourcePatch, StudioError, Transform};
+use studio_core::{
+    AudioInputPatch, Canvas, Change, SourceKind, SourcePatch, StudioError, Transform,
+};
 
-use crate::engine::{Engine, StartOptions};
+use crate::engine::{Engine, ScreenshotOptions, StartOptions};
 use crate::outputs::{OutputKind, RecordFormat};
 
 /// Liste des requêtes, typées. Le nom de variante est le champ `type` du message.
@@ -46,6 +48,9 @@ pub enum Request {
         kind: SourceKind,
         #[serde(default)]
         transform: Option<Transform>,
+        /// Métadonnées libres du client (objet JSON, 4 Kio au plus).
+        #[serde(default)]
+        meta: Option<Value>,
     },
     RemoveSource {
         scene: String,
@@ -72,6 +77,15 @@ pub enum Request {
         scene: Option<String>,
         #[serde(default)]
         format: Option<String>,
+        /// Taille de l'image (au plus celle du canvas) ; avec une seule dimension,
+        /// l'autre suit le rapport du canvas.
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
+        /// Qualité JPEG de 1 à 100.
+        #[serde(default)]
+        quality: Option<u8>,
     },
     StartRecording {
         #[serde(default)]
@@ -86,6 +100,8 @@ pub enum Request {
         bitrate_kbps: Option<u32>,
     },
     StopRecording,
+    PauseRecording,
+    ResumeRecording,
     StartStream {
         url: String,
         #[serde(default)]
@@ -107,6 +123,38 @@ pub enum Request {
         source: String,
         muted: bool,
     },
+    // Domaine `studio.mixer` : entrées audio globales.
+    GetAudioInputs,
+    CreateAudioInput {
+        name: String,
+        /// `audio_input` (seul type accepté pour l'instant, valeur par défaut).
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        device_id: Option<String>,
+        #[serde(default)]
+        volume: Option<f32>,
+        #[serde(default)]
+        muted: bool,
+        #[serde(default)]
+        meta: Option<Value>,
+    },
+    RemoveAudioInput {
+        input: String,
+    },
+    UpdateAudioInput {
+        input: String,
+        #[serde(flatten)]
+        patch: AudioInputPatch,
+    },
+    SetAudioInputVolume {
+        input: String,
+        volume: f32,
+    },
+    SetAudioInputMuted {
+        input: String,
+        muted: bool,
+    },
 }
 
 pub const CAPABILITIES: &[&str] = &[
@@ -118,6 +166,7 @@ pub const CAPABILITIES: &[&str] = &[
     "studio.preview",
     "studio.inputs",
     "studio.audio",
+    "studio.mixer",
 ];
 
 pub const REQUESTS: &[&str] = &[
@@ -141,6 +190,8 @@ pub const REQUESTS: &[&str] = &[
     "GetScreenshot",
     "StartRecording",
     "StopRecording",
+    "PauseRecording",
+    "ResumeRecording",
     "StartStream",
     "StopStream",
     "GetOutputStatus",
@@ -149,6 +200,12 @@ pub const REQUESTS: &[&str] = &[
     "GetCaptureStatus",
     "SetSourceVolume",
     "SetSourceMuted",
+    "GetAudioInputs",
+    "CreateAudioInput",
+    "RemoveAudioInput",
+    "UpdateAudioInput",
+    "SetAudioInputVolume",
+    "SetAudioInputMuted",
 ];
 
 /// Erreur renvoyée au client : (code, message).
@@ -162,6 +219,10 @@ fn studio_err(e: StudioError) -> ApiError {
         StudioError::SceneOnAir => "scene_on_air",
         StudioError::LastScene => "last_scene",
         StudioError::InvalidVolume(_) => "invalid_volume",
+        StudioError::InputNotFound(_) => "input_not_found",
+        StudioError::InputNameTaken(_) => "input_name_taken",
+        StudioError::InvalidInputKind => "invalid_input_kind",
+        StudioError::InvalidMeta(_) => "invalid_meta",
     };
     (code.to_string(), e.to_string())
 }
@@ -176,6 +237,8 @@ fn output_err(code: String) -> ApiError {
         }
         "invalid_bitrate" => "débit vidéo invalide : entre 100 et 100000 kbit/s".to_string(),
         "shutting_down" => "studiod s'arrête : aucune sortie ne peut démarrer".to_string(),
+        "output_paused" => "l'enregistrement est déjà en pause".to_string(),
+        "output_not_paused" => "l'enregistrement n'est pas en pause".to_string(),
         other => return ("output_error".into(), other.to_string()),
     };
     (code, message)
@@ -272,7 +335,8 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
             name,
             kind,
             transform,
-        } => studio().add_source(&scene, &name, kind, transform),
+            meta,
+        } => studio().add_source_with_meta(&scene, &name, kind, transform, meta),
         RemoveSource { scene, source } => studio().remove_source(&scene, &source),
         UpdateSource {
             scene,
@@ -308,10 +372,28 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
             engine.emit("CanvasChanged", json!(canvas));
             return Ok(json!(canvas));
         }
-        GetScreenshot { scene, format } => {
+        GetScreenshot {
+            scene,
+            format,
+            width,
+            height,
+            quality,
+        } => {
             let jpeg = matches!(format.as_deref(), Some("jpeg") | Some("jpg"));
+            if width == Some(0) || height == Some(0) || matches!(quality, Some(0) | Some(101..)) {
+                return Err((
+                    "invalid_data".into(),
+                    "largeur et hauteur au moins 1, qualité entre 1 et 100".into(),
+                ));
+            }
+            let opts = ScreenshotOptions {
+                jpeg,
+                width,
+                height,
+                quality,
+            };
             let bytes = engine
-                .screenshot(scene.as_deref(), jpeg)
+                .screenshot(scene.as_deref(), opts)
                 .map_err(|e| ("screenshot_failed".to_string(), e))?;
             let mime = if jpeg { "image/jpeg" } else { "image/png" };
             let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
@@ -334,6 +416,8 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
                 .map_err(output_err);
         }
         StopRecording => return engine.stop_output(OutputKind::Record).map_err(output_err),
+        PauseRecording => return engine.set_record_paused(true).map_err(output_err),
+        ResumeRecording => return engine.set_record_paused(false).map_err(output_err),
         StartStream { url, bitrate_kbps } => {
             let opts = StartOptions {
                 target: Some(url),
@@ -359,6 +443,32 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
             source,
             muted,
         } => studio().set_source_muted(&scene, &source, muted),
+        GetAudioInputs => {
+            return Ok(json!({ "inputs": studio().audio_inputs }));
+        }
+        CreateAudioInput {
+            name,
+            kind,
+            device_id,
+            volume,
+            muted,
+            meta,
+        } => {
+            if kind.as_deref().is_some_and(|k| k != "audio_input") {
+                return Err(studio_err(StudioError::InvalidInputKind));
+            }
+            studio().create_audio_input(
+                &name,
+                SourceKind::AudioInput { device_id },
+                volume,
+                muted,
+                meta,
+            )
+        }
+        RemoveAudioInput { input } => studio().remove_audio_input(&input),
+        UpdateAudioInput { input, patch } => studio().update_audio_input(&input, patch),
+        SetAudioInputVolume { input, volume } => studio().set_audio_input_volume(&input, volume),
+        SetAudioInputMuted { input, muted } => studio().set_audio_input_muted(&input, muted),
     };
     change.map(|c| apply(engine, vec![c])).map_err(studio_err)
 }
@@ -537,5 +647,189 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err.0, "invalid_bitrate");
+    }
+
+    #[test]
+    fn audio_inputs_through_api() {
+        let e = engine();
+        let mut events = e.subscribe();
+        let created = handle(
+            &e,
+            "CreateAudioInput",
+            json!({ "name": "Micro Anne", "meta": { "owner": "nino" } }),
+        )
+        .unwrap();
+        assert_eq!(created["input"]["kind"], "audio_input");
+        assert_eq!(created["input"]["volume"], 1.0);
+        assert_eq!(created["input"]["meta"]["owner"], "nino");
+        let id = created["input"]["id"].as_str().unwrap().to_string();
+        let err = handle(&e, "CreateAudioInput", json!({ "name": "Micro Anne" })).unwrap_err();
+        assert_eq!(err.0, "input_name_taken");
+        let err = handle(
+            &e,
+            "CreateAudioInput",
+            json!({ "name": "Écran", "kind": "display_capture" }),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, "invalid_input_kind");
+        let muted = handle(
+            &e,
+            "SetAudioInputMuted",
+            json!({ "input": "Micro Anne", "muted": true }),
+        )
+        .unwrap();
+        assert_eq!(muted, json!({ "input_id": id, "muted": true }));
+        let err = handle(
+            &e,
+            "SetAudioInputVolume",
+            json!({ "input": "Micro Anne", "volume": 2.5 }),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, "invalid_volume");
+        handle(
+            &e,
+            "UpdateAudioInput",
+            json!({ "input": id, "name": "Micro plateau", "kind": "audio_input", "device_id": "hw:2" }),
+        )
+        .unwrap();
+        let list = handle(&e, "GetAudioInputs", Value::Null).unwrap();
+        assert_eq!(list["inputs"][0]["name"], "Micro plateau");
+        assert_eq!(list["inputs"][0]["device_id"], "hw:2");
+        assert_eq!(list["inputs"][0]["muted"], true);
+        // L'état complet porte aussi les entrées.
+        let full = handle(&e, "GetStudio", Value::Null).unwrap();
+        assert_eq!(full["audio_inputs"][0]["name"], "Micro plateau");
+        // La capture suit l'entrée, comme pour une source.
+        if cfg!(feature = "gstreamer") {
+            assert_eq!(e.running_captures().len(), 1);
+            let status = handle(&e, "GetCaptureStatus", Value::Null).unwrap();
+            assert_eq!(status["sources"][0]["input"], true);
+        }
+        handle(&e, "RemoveAudioInput", json!({ "input": "Micro plateau" })).unwrap();
+        assert!(e.running_captures().is_empty());
+        let err = handle(&e, "RemoveAudioInput", json!({ "input": "Micro plateau" })).unwrap_err();
+        assert_eq!(err.0, "input_not_found");
+        // Événements diffusés dans l'ordre des requêtes réussies.
+        let mut types = Vec::new();
+        while let Ok(suite_protocol::ServerMessage::Event { event_type, .. }) = events.try_recv() {
+            types.push(event_type);
+        }
+        let types: Vec<&str> = types
+            .iter()
+            .map(String::as_str)
+            .filter(|t| t.starts_with("AudioInput"))
+            .collect();
+        assert_eq!(
+            types,
+            [
+                "AudioInputCreated",
+                "AudioInputMuteChanged",
+                "AudioInputUpdated",
+                "AudioInputRemoved"
+            ]
+        );
+    }
+
+    #[test]
+    fn pause_requires_active_recording() {
+        let e = engine();
+        assert_eq!(
+            handle(&e, "PauseRecording", Value::Null).unwrap_err().0,
+            "output_not_active"
+        );
+        assert_eq!(
+            handle(&e, "ResumeRecording", Value::Null).unwrap_err().0,
+            "output_not_active"
+        );
+        let status = handle(&e, "GetOutputStatus", Value::Null).unwrap();
+        assert_eq!(status["record"]["active"], false);
+    }
+
+    #[test]
+    fn screenshot_thumbnail_size_and_quality() {
+        let e = engine();
+        let decode = |v: &Value| {
+            let url = v["image"].as_str().unwrap();
+            let b64 = &url[url.find(',').unwrap() + 1..];
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .unwrap();
+            image::load_from_memory(&bytes).unwrap()
+        };
+        // Canvas 64x36 : une largeur seule garde le rapport.
+        let shot = handle(
+            &e,
+            "GetScreenshot",
+            json!({ "format": "jpeg", "width": 32, "quality": 60 }),
+        )
+        .unwrap();
+        assert!(shot["image"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/jpeg"));
+        let img = decode(&shot);
+        assert_eq!((img.width(), img.height()), (32, 18));
+        // Jamais plus grand que le canvas.
+        let img = decode(
+            &handle(
+                &e,
+                "GetScreenshot",
+                json!({ "width": 4000, "height": 4000 }),
+            )
+            .unwrap(),
+        );
+        assert_eq!((img.width(), img.height()), (64, 36));
+        let err = handle(&e, "GetScreenshot", json!({ "quality": 0 })).unwrap_err();
+        assert_eq!(err.0, "invalid_data");
+    }
+
+    #[test]
+    fn source_meta_round_trip() {
+        let e = engine();
+        let added = handle(
+            &e,
+            "AddSource",
+            json!({ "scene": "Scène 1", "name": "Intro", "kind": "color", "rgba": [0, 0, 0, 255],
+                    "meta": { "nino_owner": "nino.media", "asset": "a1" } }),
+        )
+        .unwrap();
+        assert_eq!(added["source"]["meta"]["nino_owner"], "nino.media");
+        assert_eq!(added["source"]["kind"], "color");
+        let err = handle(
+            &e,
+            "AddSource",
+            json!({ "scene": "Scène 1", "name": "X", "kind": "test_pattern", "meta": [1] }),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, "invalid_meta");
+        let updated = handle(
+            &e,
+            "UpdateSource",
+            json!({ "scene": "Scène 1", "source": "Intro", "meta": { "asset": "a2" } }),
+        )
+        .unwrap();
+        assert_eq!(updated["source"]["meta"], json!({ "asset": "a2" }));
+    }
+
+    #[test]
+    fn mixer_capability_announced() {
+        let e = engine();
+        let info = handle(&e, "GetAppInfo", Value::Null).unwrap();
+        assert!(info["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("studio.mixer")));
+        let list = handle(&e, "GetRequestList", Value::Null).unwrap();
+        for r in [
+            "PauseRecording",
+            "ResumeRecording",
+            "CreateAudioInput",
+            "SetAudioInputMuted",
+        ] {
+            assert!(
+                list["requests"].as_array().unwrap().contains(&json!(r)),
+                "{r}"
+            );
+        }
     }
 }
