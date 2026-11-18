@@ -131,6 +131,7 @@ traiter dans une seule boucle.
 | `UpdateSource` | `scene`, `source`, puis au choix `name`, `visible`, `transform`, `volume`, `muted`, `kind` + réglages |
 | `RemoveSource` | `scene`, `source` |
 | `MoveSource` | `scene`, `source`, `index` (0 = tout en dessous) |
+| `GetCaptureStatus` | — (état des captures en cours, voir plus bas) |
 
 Types de sources (`kind`) et leurs réglages :
 
@@ -174,6 +175,17 @@ les sources de capture :
   (périphérique absent ou débranché, fichier illisible, flux SRT coupé) ; elle est
   relancée automatiquement après `retry_in_ms` (de 1 s à 30 s, délai doublé à chaque
   échec). La source ne dessine rien pendant la panne.
+
+`GetCaptureStatus` donne l'état courant de chaque capture, pour un client qui se connecte
+après ces événements : une entrée par source de capture présente dans une scène,
+`source_id`, `kind`, `state` (`starting` tant que rien n'est arrivé, `running`, `failed`) et,
+pour `failed`, `error` et `retry_in_ms` du dernier échec.
+
+```json
+{"sources":[{"source_id":"…","kind":"media_file","state":"running"},
+            {"source_id":"…","kind":"audio_input","state":"failed",
+             "error":"pulsesrc0 : Failed to connect: Connection refused","retry_in_ms":4000}]}
+```
 
 ### `studio.outputs`
 

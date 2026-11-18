@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Fusionné par Tauri 2 dans l'Info.plist de l'app macOS (src-tauri/Info.plist).
+  Textes affichés par macOS quand Maya Studio (ou le moteur studiod qu'il lance)
+  ouvre une caméra ou une entrée audio pour la première fois.
+  La capture d'écran n'a pas de clé : elle s'autorise dans Réglages Système.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSCameraUsageDescription</key>
+  <string>Maya Studio utilise la caméra pour l'afficher dans vos scènes, l'enregistrer et la diffuser en direct.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Maya Studio utilise le micro et les interfaces audio pour les mixer dans l'enregistrement et le direct.</string>
+</dict>
+</plist>

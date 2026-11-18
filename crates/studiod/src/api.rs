@@ -95,6 +95,7 @@ pub enum Request {
     GetOutputStatus,
     GetEncoders,
     GetInputDevices,
+    GetCaptureStatus,
     SetSourceVolume {
         scene: String,
         source: String,
@@ -145,6 +146,7 @@ pub const REQUESTS: &[&str] = &[
     "GetOutputStatus",
     "GetEncoders",
     "GetInputDevices",
+    "GetCaptureStatus",
     "SetSourceVolume",
     "SetSourceMuted",
 ];
@@ -346,6 +348,7 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
         GetOutputStatus => return Ok(engine.output_status()),
         GetEncoders => return Ok(engine.encoders()),
         GetInputDevices => return Ok(engine.input_devices()),
+        GetCaptureStatus => return Ok(engine.capture_status()),
         SetSourceVolume {
             scene,
             source,
@@ -499,8 +502,17 @@ mod tests {
         assert_eq!(scene["sources"][0]["volume"], 0.5);
         assert_eq!(scene["sources"][0]["muted"], true);
         // La capture suit la source : présente après l'ajout, arrêtée après le retrait.
+        let status = handle(&e, "GetCaptureStatus", Value::Null).unwrap();
         if cfg!(feature = "gstreamer") {
             assert_eq!(e.running_captures().len(), 1);
+            let sources = status["sources"].as_array().unwrap();
+            assert_eq!(sources.len(), 1);
+            assert_eq!(sources[0]["kind"], "audio_input");
+            assert!(
+                ["starting", "running", "failed"].contains(&sources[0]["state"].as_str().unwrap())
+            );
+        } else {
+            assert_eq!(status["sources"], json!([]));
         }
         handle(
             &e,
@@ -509,6 +521,8 @@ mod tests {
         )
         .unwrap();
         assert!(e.running_captures().is_empty());
+        let status = handle(&e, "GetCaptureStatus", Value::Null).unwrap();
+        assert_eq!(status["sources"], json!([]));
     }
 
     #[test]

@@ -22,7 +22,10 @@ Fonctionne déjà :
   GStreamer in-process (LGPL) qui choisit l'encodeur matériel disponible
   (VideoToolbox, NVENC, QuickSync, AMF, Media Foundation, VA-API) et se replie sur openh264 ;
 - capture d'écran PNG/JPEG de n'importe quelle scène ;
-- API WebSocket complète selon le protocole de la suite, avec jeton et événements.
+- API WebSocket complète selon le protocole de la suite, avec jeton et événements ;
+- client TypeScript de la suite (`@suite-media/client`) et interface desktop Tauri + React
+  (mode studio, scènes, sources de capture avec leur état, propriétés, mixeur audio avec
+  VU-mètres, enregistrement MP4 / MKV et direct).
 
 Prochaines étapes (voir le projet Linear « Media · Maya Studio ») :
 
@@ -30,7 +33,8 @@ Prochaines étapes (voir le projet Linear « Media · Maya Studio ») :
 2. Audio : filtres (gain, noise gate, compresseur), moniteur casque, compensation de dérive
    d'horloge des interfaces audio.
 3. Compositeur GPU wgpu (DirectX 12 / Metal / Vulkan).
-4. Interface desktop Tauri + React (Windows, macOS).
+4. Interface desktop : flux d'aperçu à faible latence (les moniteurs interrogent des
+   captures JPEG pour l'instant).
 5. Découverte mDNS des apps de la suite.
 
 ## Architecture
@@ -46,11 +50,18 @@ crates/
     src/devices.rs  découverte des périphériques (gst::DeviceMonitor)
     src/media.rs    dernières images et files audio des sources (sans GStreamer)
     src/mixer.rs    calculs du mixeur audio (somme, volume, écrêtage, dBFS, calage A/V)
+packages/
+  suite-client/     client TypeScript du protocole (navigateur, Node, mobile), sans dépendance
+apps/
+  desktop/          interface Tauri 2 + React ; lance studiod en sidecar, parle en WebSocket
 tools/
   demo-client.mjs   client de démo (fait ce que Nino fera)
 docs/
   protocole-suite.md
 ```
+
+L'interface ne parle au moteur **que** par l'API WebSocket, comme Nino : le même front-end
+servira au futur studio web face à un moteur distant.
 
 ## Installer GStreamer
 
@@ -100,19 +111,23 @@ Pour compiler sans GStreamer : `cargo build -p studiod --no-default-features`
 Prérequis : Rust stable, GStreamer (voir ci-dessus), Node 22+ pour le client de démo.
 
 ```sh
-cargo run --release -p studiod -- --token monjeton
+export STUDIO_TOKEN=$(openssl rand -hex 16)   # jeton aléatoire
+cargo run --release -p studiod
 # dans un autre terminal
-node tools/demo-client.mjs ws://127.0.0.1:4460 monjeton
+node tools/demo-client.mjs ws://127.0.0.1:4460 "$STUDIO_TOKEN"
 # enregistrement MKV et diffusion SRT en même temps :
-node tools/demo-client.mjs ws://127.0.0.1:4460 monjeton mkv "srt://127.0.0.1:9000"
+node tools/demo-client.mjs ws://127.0.0.1:4460 "$STUDIO_TOKEN" mkv "srt://127.0.0.1:9000"
 # avec un fichier vidéo en incrustation (et son son dans l'enregistrement) :
-node tools/demo-client.mjs ws://127.0.0.1:4460 monjeton --media ~/Vidéos/clip.mp4
+node tools/demo-client.mjs ws://127.0.0.1:4460 "$STUDIO_TOKEN" --media ~/Vidéos/clip.mp4
 ```
 
 Options de `studiod` : `--listen 127.0.0.1:4460`, `--token` (ou `STUDIO_TOKEN`),
 `--recordings recordings`, `--width 1280 --height 720 --fps 30`,
 `--output-backend gstreamer|ffmpeg`, `--encoder auto|<élément>`,
-`--record-bitrate 6000`, `--stream-bitrate 4500` (kbit/s).
+`--record-bitrate 6000`, `--stream-bitrate 4500` (kbit/s), `--exit-on-stdin-eof` (sidecar :
+s'arrêter proprement quand l'app parente ferme l'entrée standard). Sur SIGINT / SIGTERM ou
+fermeture de l'entrée standard, les sorties sont finalisées et les captures arrêtées
+avant de quitter.
 
 ### Choisir l'encodeur
 
@@ -163,7 +178,8 @@ Avec un `device_id` issu de `GetInputDevices`, l'élément est créé par le pé
 lui-même (`gst::Device::create_element`). Une capture qui échoue (caméra débranchée, pas
 d'accès à l'écran, flux SRT coupé) émet `SourceFailed` et est relancée de 1 s à 30 s plus
 tard. Sous macOS, la caméra, le micro et l'écran demandent l'autorisation de l'utilisateur
-(Réglages système → Confidentialité). En session Wayland pure (sans `DISPLAY`), la capture
+(Réglages Système → Confidentialité et sécurité ; voir
+[apps/desktop/README.md](apps/desktop/README.md#autorisations-macos-caméra-micro-écran)). En session Wayland pure (sans `DISPLAY`), la capture
 d'écran n'est pas encore prise en charge : elle demande le portail xdg-desktop-portal
 (ScreenCast) et la source échoue avec un message clair plutôt que de capturer la webcam
 par erreur ; une session X11 ou XWayland fonctionne avec `ximagesrc`.
@@ -183,6 +199,30 @@ Tester la diffusion SRT en local :
 
 ```sh
 ffmpeg -i "srt://127.0.0.1:9000?mode=listener" -c copy sortie.ts
+```
+
+### Interface desktop (macOS, Windows, Linux)
+
+Prérequis en plus : les outils de compilation de Tauri — Xcode Command Line Tools sur
+macOS (`xcode-select --install`), Microsoft C++ Build Tools et WebView2 sur Windows,
+WebKitGTK 4.1 sur Linux.
+
+```sh
+npm install          # espace de travail npm : packages/* et apps/*
+npm run build        # compile @suite-media/client puis le front-end
+cd apps/desktop
+npm run tauri dev    # compile studiod, le lance en sidecar et ouvre la fenêtre
+```
+
+Sous Windows, même chose dans PowerShell (`cd apps\desktop`). `npm run tauri build`
+produit l'installateur (`.dmg` / `.msi` / `.AppImage`). Détails, mode navigateur sans
+Tauri (`VITE_STUDIO_URL`, `?url=…&token=…`) et variables : [apps/desktop/README.md](apps/desktop/README.md).
+
+### Tests
+
+```sh
+cargo fmt --check && cargo clippy --all-targets && cargo test
+npm test             # client TypeScript : unitaires + intégration contre le vrai studiod
 ```
 
 ## Licences

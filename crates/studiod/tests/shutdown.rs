@@ -1,5 +1,6 @@
-//! Arrêt de `studiod` par signal : l'enregistrement MP4 (non fragmenté, le format
-//! par défaut) doit être finalisé, sinon le fichier est illisible (atome moov absent).
+//! Arrêt de `studiod` par signal ou par fermeture de l'entrée standard (sidecar lancé
+//! avec `--exit-on-stdin-eof`) : l'enregistrement MP4 (non fragmenté, le format par
+//! défaut) doit être finalisé, sinon le fichier est illisible (atome moov absent).
 #![cfg(all(unix, feature = "gstreamer"))]
 
 use std::process::{Command, Stdio};
@@ -44,26 +45,47 @@ async fn connect(
     }
 }
 
-async fn run_signal_test(signal: &str) {
-    let dir =
-        std::env::temp_dir().join(format!("studiod-signal-{}-{}", std::process::id(), signal));
+/// Façon d'arrêter le moteur.
+#[derive(Clone, Copy)]
+enum Stop {
+    /// Signal POSIX (`INT`, `TERM`).
+    Signal(&'static str),
+    /// Fermeture de l'entrée standard, comme quand l'app parente disparaît.
+    StdinEof,
+}
+
+impl Stop {
+    fn label(self) -> &'static str {
+        match self {
+            Stop::Signal(s) => s,
+            Stop::StdinEof => "stdin",
+        }
+    }
+}
+
+async fn run_stop_test(stop: Stop) {
+    let dir = std::env::temp_dir().join(format!(
+        "studiod-signal-{}-{}",
+        std::process::id(),
+        stop.label()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let addr = format!("127.0.0.1:{}", free_port());
-    let mut guard = KillOnDrop(
-        Command::new(env!("CARGO_BIN_EXE_studiod"))
-            .args(["--listen", &addr, "--width", "320", "--height", "240"])
-            .args([
-                "--encoder",
-                studiod::encoders::test_encoder(),
-                "--recordings",
-            ])
-            .arg(&dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("lancement de studiod"),
-    );
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_studiod"));
+    cmd.args(["--listen", &addr, "--width", "320", "--height", "240"])
+        .args([
+            "--encoder",
+            studiod::encoders::test_encoder(),
+            "--recordings",
+        ])
+        .arg(&dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Stop::StdinEof = stop {
+        cmd.arg("--exit-on-stdin-eof").stdin(Stdio::piped());
+    }
+    let mut guard = KillOnDrop(cmd.spawn().expect("lancement de studiod"));
     let child = &mut guard.0;
 
     let mut ws = connect(&addr).await;
@@ -106,12 +128,17 @@ async fn run_signal_test(signal: &str) {
     assert_eq!(response["data"]["format"], "mp4");
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let status = Command::new("kill")
-        .arg(format!("-{signal}"))
-        .arg(child.id().to_string())
-        .status()
-        .unwrap();
-    assert!(status.success());
+    match stop {
+        Stop::Signal(signal) => {
+            let status = Command::new("kill")
+                .arg(format!("-{signal}"))
+                .arg(child.id().to_string())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        Stop::StdinEof => drop(child.stdin.take()),
+    }
     let deadline = Instant::now() + Duration::from_secs(15);
     let exit = loop {
         if let Some(s) = child.try_wait().unwrap() {
@@ -119,7 +146,7 @@ async fn run_signal_test(signal: &str) {
         }
         if Instant::now() > deadline {
             let _ = child.kill();
-            panic!("studiod ne s'est pas arrêté après SIG{signal}");
+            panic!("studiod ne s'est pas arrêté après {}", stop.label());
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
@@ -157,10 +184,15 @@ async fn run_signal_test(signal: &str) {
 
 #[tokio::test]
 async fn sigint_finalizes_mp4_recording() {
-    run_signal_test("INT").await;
+    run_stop_test(Stop::Signal("INT")).await;
 }
 
 #[tokio::test]
 async fn sigterm_finalizes_mp4_recording() {
-    run_signal_test("TERM").await;
+    run_stop_test(Stop::Signal("TERM")).await;
+}
+
+#[tokio::test]
+async fn stdin_eof_finalizes_mp4_recording() {
+    run_stop_test(Stop::StdinEof).await;
 }
