@@ -2,3 +2,5 @@
 /recordings
 *.mp4
 *.flv
+*.mkv
+/*.ts

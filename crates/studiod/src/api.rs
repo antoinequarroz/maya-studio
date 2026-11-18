@@ -5,8 +5,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use studio_core::{Canvas, Change, SourceKind, SourcePatch, StudioError, Transform};
 
-use crate::engine::Engine;
-use crate::outputs::OutputKind;
+use crate::engine::{Engine, StartOptions};
+use crate::outputs::{OutputKind, RecordFormat};
 
 /// Liste des requêtes, typées. Le nom de variante est le champ `type` du message.
 #[derive(Debug, Deserialize)]
@@ -76,13 +76,24 @@ pub enum Request {
     StartRecording {
         #[serde(default)]
         path: Option<String>,
+        /// `mp4` (défaut) ou `mkv` ; déduit de l'extension de `path` si absent.
+        #[serde(default)]
+        format: Option<RecordFormat>,
+        /// MP4 fragmenté, lisible même après un arrêt brutal.
+        #[serde(default)]
+        fragmented: bool,
+        #[serde(default)]
+        bitrate_kbps: Option<u32>,
     },
     StopRecording,
     StartStream {
         url: String,
+        #[serde(default)]
+        bitrate_kbps: Option<u32>,
     },
     StopStream,
     GetOutputStatus,
+    GetEncoders,
 }
 
 pub const CAPABILITIES: &[&str] = &[
@@ -90,6 +101,7 @@ pub const CAPABILITIES: &[&str] = &[
     "studio.scenes",
     "studio.sources",
     "studio.outputs",
+    "studio.encoders",
     "studio.preview",
 ];
 
@@ -117,6 +129,7 @@ pub const REQUESTS: &[&str] = &[
     "StartStream",
     "StopStream",
     "GetOutputStatus",
+    "GetEncoders",
 ];
 
 /// Erreur renvoyée au client : (code, message).
@@ -138,6 +151,11 @@ fn output_err(code: String) -> ApiError {
         "output_already_active" => "cette sortie est déjà active".to_string(),
         "output_not_active" => "cette sortie n'est pas active".to_string(),
         "missing_url" => "URL de diffusion manquante".to_string(),
+        "unsupported_url" => {
+            "URL non prise en charge : rtmp://, rtmps:// ou srt:// attendu".to_string()
+        }
+        "invalid_bitrate" => "débit vidéo invalide : entre 100 et 100000 kbit/s".to_string(),
+        "shutting_down" => "studiod s'arrête : aucune sortie ne peut démarrer".to_string(),
         other => return ("output_error".into(), other.to_string()),
     };
     (code, message)
@@ -155,7 +173,18 @@ pub fn handle(engine: &Engine, request_type: &str, data: Value) -> Result<Value,
     if !data.is_null() {
         envelope["data"] = data;
     }
-    let req: Request = serde_json::from_value(envelope).map_err(|e| {
+    // Une requête dont tous les champs sont optionnels peut arriver sans `data` :
+    // on réessaie alors avec un objet vide plutôt que de répondre « missing field data ».
+    let parsed = serde_json::from_value::<Request>(envelope.clone()).or_else(|e| {
+        if envelope.get("data").is_none() {
+            let mut with_empty = envelope;
+            with_empty["data"] = json!({});
+            serde_json::from_value(with_empty).map_err(|_| e)
+        } else {
+            Err(e)
+        }
+    });
+    let req: Request = parsed.map_err(|e| {
         (
             "invalid_data".to_string(),
             format!("données invalides : {e}"),
@@ -232,12 +261,6 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
             index,
         } => studio().move_source(&scene, &source, index),
         SetCanvas { width, height, fps } => {
-            if engine.has_active_outputs() {
-                return Err((
-                    "outputs_active".into(),
-                    "arrête les sorties avant de changer le canvas".into(),
-                ));
-            }
             if width == 0
                 || height == 0
                 || width % 2 == 1
@@ -251,7 +274,13 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
                 ));
             }
             let canvas = Canvas { width, height, fps };
-            studio().canvas = canvas;
+            // Vérification des sorties et écriture atomiques (voir Engine::set_canvas).
+            engine.set_canvas(canvas).map_err(|code| {
+                (
+                    code,
+                    "arrête les sorties avant de changer le canvas".to_string(),
+                )
+            })?;
             engine.emit("CanvasChanged", json!(canvas));
             return Ok(json!(canvas));
         }
@@ -264,19 +293,146 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
             let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
             return Ok(json!({ "image": format!("data:{mime};base64,{b64}") }));
         }
-        StartRecording { path } => {
+        StartRecording {
+            path,
+            format,
+            fragmented,
+            bitrate_kbps,
+        } => {
+            let opts = StartOptions {
+                target: path,
+                format,
+                fragmented,
+                bitrate_kbps,
+            };
             return engine
-                .start_output(OutputKind::Record, path)
-                .map_err(output_err)
+                .start_output(OutputKind::Record, opts)
+                .map_err(output_err);
         }
         StopRecording => return engine.stop_output(OutputKind::Record).map_err(output_err),
-        StartStream { url } => {
+        StartStream { url, bitrate_kbps } => {
+            let opts = StartOptions {
+                target: Some(url),
+                bitrate_kbps,
+                ..Default::default()
+            };
             return engine
-                .start_output(OutputKind::Stream, Some(url))
-                .map_err(output_err)
+                .start_output(OutputKind::Stream, opts)
+                .map_err(output_err);
         }
         StopStream => return engine.stop_output(OutputKind::Stream).map_err(output_err),
         GetOutputStatus => return Ok(engine.output_status()),
+        GetEncoders => return Ok(engine.encoders()),
     };
     change.map(|c| apply(engine, vec![c])).map_err(studio_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::OutputConfig;
+    use studio_core::Studio;
+
+    fn engine() -> std::sync::Arc<Engine> {
+        let canvas = Canvas {
+            width: 64,
+            height: 36,
+            fps: 30,
+        };
+        Engine::new(
+            Studio::new(canvas),
+            std::env::temp_dir(),
+            OutputConfig::default(),
+        )
+    }
+
+    #[test]
+    fn optional_only_requests_accept_missing_data() {
+        // Sans `data` : GetScreenshot (champs tous optionnels) et Cut (aucun champ).
+        let e = engine();
+        let shot = handle(&e, "GetScreenshot", Value::Null).unwrap();
+        assert!(shot["image"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png"));
+        assert!(handle(&e, "Cut", Value::Null).is_ok());
+        // Un champ obligatoire manquant reste une erreur invalid_data.
+        let err = handle(&e, "CreateScene", Value::Null).unwrap_err();
+        assert_eq!(err.0, "invalid_data");
+    }
+
+    #[test]
+    fn output_requests_parse_optional_fields() {
+        let req: Request = serde_json::from_value(json!({
+            "type": "StartRecording",
+            "data": { "format": "mkv", "fragmented": true, "bitrate_kbps": 8000 }
+        }))
+        .unwrap();
+        assert!(matches!(
+            req,
+            Request::StartRecording {
+                path: None,
+                format: Some(RecordFormat::Mkv),
+                fragmented: true,
+                bitrate_kbps: Some(8000)
+            }
+        ));
+        // Anciennes formes, toujours acceptées (rétrocompatibilité).
+        let req: Request =
+            serde_json::from_value(json!({ "type": "StartRecording", "data": {} })).unwrap();
+        assert!(matches!(
+            req,
+            Request::StartRecording {
+                format: None,
+                fragmented: false,
+                ..
+            }
+        ));
+        let req: Request = serde_json::from_value(
+            json!({ "type": "StartStream", "data": { "url": "srt://h:1" } }),
+        )
+        .unwrap();
+        assert!(matches!(
+            req,
+            Request::StartStream {
+                bitrate_kbps: None,
+                ..
+            }
+        ));
+        assert!(serde_json::from_value::<Request>(
+            json!({ "type": "StartRecording", "data": { "format": "avi" } })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn get_encoders_listed_and_answered() {
+        assert!(REQUESTS.contains(&"GetEncoders"));
+        assert!(CAPABILITIES.contains(&"studio.encoders"));
+        let v = handle(&engine(), "GetEncoders", Value::Null).unwrap();
+        assert_eq!(v["requested"], "auto");
+        let list = v["encoders"].as_array().unwrap();
+        if cfg!(feature = "gstreamer") {
+            assert_eq!(v["backend"], "gstreamer");
+            let selected: Vec<_> = list.iter().filter(|e| e["selected"] == true).collect();
+            assert!(selected.len() <= 1);
+            let x264 = list.iter().find(|e| e["name"] == "x264enc").unwrap();
+            assert_eq!(x264["selected"], false);
+            assert_eq!(x264["gpl"], true);
+        }
+    }
+
+    #[test]
+    fn stream_url_and_bitrate_validated() {
+        let e = engine();
+        let err = handle(&e, "StartStream", json!({ "url": "udp://x" })).unwrap_err();
+        assert_eq!(err.0, "unsupported_url");
+        let err = handle(
+            &e,
+            "StartStream",
+            json!({ "url": "srt://h:1", "bitrate_kbps": 5 }),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, "invalid_bitrate");
+    }
 }

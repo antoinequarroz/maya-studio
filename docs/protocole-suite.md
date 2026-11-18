@@ -32,7 +32,7 @@ Le code de référence est le crate Rust `crates/suite-protocol`. Toute app de l
 ```
 serveur → {"op":"hello","app":{"id":"studio","name":"Maya Studio","version":"0.1.0"},
            "protocol":1,"auth_required":true,
-           "capabilities":["core","studio.scenes","studio.sources","studio.outputs","studio.preview"]}
+           "capabilities":["core","studio.scenes","studio.sources","studio.outputs","studio.encoders","studio.preview"]}
 
 client  → {"op":"identify","token":"…","name":"Nino plateau 1",
            "app":{"id":"nino","name":"Nino","version":"0.3.0"},"events":true}
@@ -143,13 +143,73 @@ Types de sources (`kind`) : `color` (`rgba`), `image` (`path`), `test_pattern`.
 
 | Requête | Données |
 |---|---|
-| `StartRecording` | `path` optionnel |
+| `StartRecording` | `path` optionnel, `format` optionnel (`mp4` par défaut ou `mkv`, sinon déduit de l'extension de `path`), `fragmented` optionnel (MP4 fragmenté, lisible même après un arrêt brutal), `bitrate_kbps` optionnel (6000 par défaut) |
 | `StopRecording` | — |
-| `StartStream` | `url` (`rtmp://…/clé` ou `srt://…`) |
+| `StartStream` | `url` (`rtmp://…/clé`, `rtmps://…/clé` ou `srt://hôte:port`), `bitrate_kbps` optionnel (4500 par défaut) |
 | `StopStream` | — |
 | `GetOutputStatus` | — |
 
-Événements : `OutputStarted`, `OutputStopped`, `OutputFailed`.
+Chaque sortie porte une piste vidéo H.264 et une piste audio AAC 48 kHz stéréo.
+Conteneurs : MP4 ou Matroska pour l'enregistrement, FLV pour RTMP(S), MPEG-TS pour SRT.
+
+Réponse de `StartRecording` / `StartStream` et données de `OutputStarted` :
+
+```json
+{"output":"record","target":"recordings/enregistrement-1794907353.mp4","backend":"gstreamer",
+ "encoder":"openh264enc","bitrate_kbps":6000,"format":"mp4"}
+```
+
+`StopRecording` / `StopStream` et `OutputStopped` ajoutent `frames`, `dropped_frames`,
+`duration_s`, `finalized` (vrai si le fichier a été finalisé proprement) et, en cas de
+problème, `warning`.
+
+`GetOutputStatus` :
+
+```json
+{"backend":"gstreamer",
+ "record":{"active":true,"target":"…","encoder":"vtenc_h264_hw","bitrate_kbps":6000,"format":"mp4",
+           "frames":912,"dropped_frames":0,"duration_s":30.4},
+ "stream":{"active":false}}
+```
+
+`dropped_frames` compte les images perdues parce que l'encodeur ou le réseau ne suivait pas :
+la boucle de rendu n'attend jamais une sortie. Une sortie en cours de démarrage (pipeline
+en construction) apparaît avec `"active":false,"starting":true`.
+
+Codes d'erreur : `output_already_active` (sortie active ou en démarrage), `output_not_active`,
+`missing_url`, `unsupported_url`, `invalid_bitrate`, `shutting_down` (studiod est en train de
+s'arrêter), `output_error` (détail dans `message`, par exemple encodeur introuvable).
+
+Événements : `OutputStarted`, `OutputStopped`, `OutputFailed` (`output`, `error` : la sortie
+s'est arrêtée seule, par exemple connexion RTMP refusée, connexion SRT refusée ou perdue,
+disque plein). En SRT, la reconnexion automatique de `srtsink` est désactivée : une
+connexion perdue arrête la sortie avec `OutputFailed` au lieu de la laisser « active » sans
+rien envoyer ; c'est au client de relancer `StartStream`.
+
+`SetCanvas` est refusé (`outputs_active`) tant qu'une sortie est active ou en démarrage.
+
+À la réception de SIGINT (Ctrl-C) ou SIGTERM, `studiod` arrête proprement toutes les sorties
+(EOS, finalisation des MP4) avant de quitter.
+
+### `studio.encoders`
+
+| Requête | Données | Réponse |
+|---|---|---|
+| `GetEncoders` | — | `backend`, `requested` (`auto` ou nom demandé au lancement), `encoders` |
+
+Chaque entrée de `encoders` : `name` (élément GStreamer), `hardware`, `available`,
+`selected` (celui qu'utilisera la prochaine sortie), `gpl` (vrai pour `x264enc`, jamais
+choisi automatiquement).
+
+```json
+{"backend":"gstreamer","requested":"auto","encoders":[
+  {"name":"nvh264enc","hardware":true,"available":false,"selected":false,"gpl":false},
+  {"name":"vah264enc","hardware":true,"available":true,"selected":true,"gpl":false},
+  {"name":"openh264enc","hardware":false,"available":true,"selected":false,"gpl":false},
+  {"name":"x264enc","hardware":false,"available":true,"selected":false,"gpl":true}]}
+```
+
+Avec le backend `ffmpeg`, la liste est vide.
 
 ### `studio.preview`
 
