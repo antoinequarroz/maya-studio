@@ -59,8 +59,10 @@ jobs:
       - name: Compiler le moteur
         run: cargo build --workspace --locked
 
+      # En release : les tests d'enregistrement par le moteur attendent ~30 i/s en temps
+      # réel, que le compositeur logiciel ne tient pas en debug sur les machines de CI.
       - name: Tests du moteur
-        run: cargo test --workspace --locked --no-fail-fast
+        run: cargo test --workspace --locked --no-fail-fast --release
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
