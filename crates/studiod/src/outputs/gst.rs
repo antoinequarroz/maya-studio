@@ -456,6 +456,14 @@ impl Output for GstOutput {
         }
     }
 
+    fn skip_frames(&mut self, n: u64, _last: &[u8]) -> std::io::Result<()> {
+        // Horodatages par compteur : sauter le compteur laisse un trou de PTS que les
+        // conteneurs gèrent (la dernière image reste affichée), sans encoder de doublons.
+        self.frames += n;
+        self.dropped += n;
+        Ok(())
+    }
+
     fn audio_sink(&self) -> Option<Arc<dyn AudioSink>> {
         Some(Arc::clone(&self.audio) as Arc<dyn AudioSink>)
     }

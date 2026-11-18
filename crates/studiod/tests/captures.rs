@@ -15,6 +15,14 @@ use suite_protocol::ServerMessage;
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+/// Sous Windows, `Command` n'ajoute `.exe` qu'aux noms sans extension : « gst-launch-1.0 »
+/// en a une (« .0 »), il faut donc le nom complet.
+const GST_LAUNCH: &str = if cfg!(windows) {
+    "gst-launch-1.0.exe"
+} else {
+    "gst-launch-1.0"
+};
+
 const W: u32 = 320;
 const H: u32 = 240;
 const FPS: u32 = 30;
@@ -30,7 +38,7 @@ fn test_clip() -> &'static Path {
     static CLIP: OnceLock<PathBuf> = OnceLock::new();
     CLIP.get_or_init(|| {
         let path = temp_dir().join("clip.mp4");
-        let status = Command::new("gst-launch-1.0")
+        let status = Command::new(GST_LAUNCH)
             .args(["-q", "-e"])
             .args(
                 format!(
@@ -39,7 +47,8 @@ fn test_clip() -> &'static Path {
                      audiotestsrc num-buffers=141 wave=sine freq=440 volume=0.5 \
                      ! audio/x-raw,rate=48000,channels=2 ! audioconvert ! avenc_aac ! aacparse ! queue ! mux.",
                     studiod::encoders::test_encoder(),
-                    path.display()
+                    // Barres obliques : gst-launch lit « \\ » comme un échappement (chemins Windows).
+                    path.display().to_string().replace('\\', "/")
                 )
                 .split_whitespace(),
             )
@@ -346,7 +355,7 @@ struct SrtSender(std::process::Child);
 
 impl SrtSender {
     fn start(uri: &str) -> Self {
-        let child = Command::new("gst-launch-1.0")
+        let child = Command::new(GST_LAUNCH)
             .arg("-q")
             .args(
                 format!(

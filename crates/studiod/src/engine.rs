@@ -702,12 +702,43 @@ impl Engine {
                     if next > now {
                         std::thread::sleep(next - now);
                     } else {
-                        // En retard : on se recale plutôt que d'accumuler.
-                        next = now;
+                        // En retard d'au moins une période : on saute les images
+                        // manquées au lieu de les rattraper, mais les sorties avancent
+                        // leur horloge d'autant, pour que la durée enregistrée reste
+                        // celle du temps réel (sinon une machine lente produit un
+                        // fichier plus court et le son en avance est jeté).
+                        let missed = ((now - next).as_secs_f64() / period.as_secs_f64()) as u64;
+                        if missed > 0 {
+                            *engine.frame.lock().unwrap() += missed;
+                            if has_outputs {
+                                engine.skip_frames(missed, canvas, &buf);
+                            }
+                            next += period.mul_f64(missed as f64);
+                        }
                     }
                 }
             })
             .expect("thread de rendu");
+    }
+
+    /// Images que la boucle de rendu n'a pas pu produire à temps : chaque sortie
+    /// active (non en pause, au même canvas) avance son compteur d'autant.
+    fn skip_frames(&self, n: u64, canvas: Canvas, last: &[u8]) {
+        let mut failed = Vec::new();
+        {
+            let mut outputs = self.outputs.lock().unwrap();
+            for (kind, active) in outputs.active.iter_mut() {
+                if active.canvas != canvas || active.paused_since.is_some() {
+                    continue;
+                }
+                if let Err(e) = active.output.skip_frames(n, last) {
+                    failed.push((*kind, e.to_string()));
+                    continue;
+                }
+                active.frames += n;
+            }
+        }
+        self.fail_outputs(failed);
     }
 
     /// Pousse un bloc mixé dans l'entrée audio de chaque sortie active, calé sur

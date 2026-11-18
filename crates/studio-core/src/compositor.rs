@@ -97,7 +97,7 @@ impl Compositor {
         out.clear();
         out.resize(w * h * 4, 0);
         // Fond noir opaque.
-        for px in out.chunks_exact_mut(4) {
+        for px in out.as_chunks_mut::<4>().0 {
             px[3] = 255;
         }
         for source in scene
@@ -195,12 +195,12 @@ impl Compositor {
             let dst_row = &mut out[row];
             match &pixels {
                 Pixels::Solid(px) => {
-                    for d in dst_row.chunks_exact_mut(4) {
+                    for d in dst_row.as_chunks_mut::<4>().0 {
                         blend(d, *px, t.opacity);
                     }
                 }
                 Pixels::Pattern => {
-                    for (i, d) in dst_row.chunks_exact_mut(4).enumerate() {
+                    for (i, d) in dst_row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                         let u = (((x0 + i as i64) as f32 + 0.5) - t.x) / t.width;
                         blend(d, test_pattern(u, v, frame), t.opacity);
                     }
@@ -212,7 +212,7 @@ impl Compositor {
                 } => {
                     let sy = ((v * *height as f32) as usize).min(*height as usize - 1);
                     let src_row = &data[sy * *width as usize * 4..(sy + 1) * *width as usize * 4];
-                    for (d, &sx) in dst_row.chunks_exact_mut(4).zip(&columns) {
+                    for (d, &sx) in dst_row.as_chunks_mut::<4>().0.iter_mut().zip(&columns) {
                         let s = &src_row[sx * 4..sx * 4 + 4];
                         if opaque && s[3] == 255 {
                             d.copy_from_slice(s);

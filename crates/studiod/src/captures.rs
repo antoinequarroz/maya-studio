@@ -676,8 +676,10 @@ fn audio_branch(media: &Arc<SourceMedia>, sync: bool) -> Result<gst::Bin, String
                 };
                 if let Ok(map) = buffer.map_readable() {
                     let samples: Vec<i16> = map
-                        .chunks_exact(2)
-                        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                        .as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|&b| i16::from_le_bytes(b))
                         .collect();
                     audio.push(&samples);
                     media.mark_data_seen();

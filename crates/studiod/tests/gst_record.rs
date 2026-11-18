@@ -40,7 +40,7 @@ fn record(path: &Path, format: RecordFormat, fragmented: bool) -> u64 {
     let start = Instant::now();
     for n in 0..u64::from(FPS * 2) {
         // Dégradé qui bouge, pour que l'encodeur ait quelque chose à coder.
-        for (i, px) in frame.chunks_exact_mut(4).enumerate() {
+        for (i, px) in frame.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             px.copy_from_slice(&[(i as u64 + n * 4) as u8, (n * 3) as u8, 128, 255]);
         }
         out.push_frame(&frame).expect("push_frame");
