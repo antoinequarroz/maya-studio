@@ -5,5 +5,7 @@ pub mod model;
 pub mod studio;
 
 pub use compositor::{Compositor, FrameProvider, NoFrames, VideoFrame};
-pub use model::{Canvas, Scene, Source, SourceKind, Transform, MAX_VOLUME};
-pub use studio::{Change, SourcePatch, Studio, StudioError};
+pub use model::{
+    AudioInput, Canvas, Scene, Source, SourceKind, Transform, MAX_META_BYTES, MAX_VOLUME,
+};
+pub use studio::{AudioInputPatch, Change, SourcePatch, Studio, StudioError};

@@ -287,6 +287,7 @@ mod tests {
             visible: true,
             volume: 1.0,
             muted: false,
+            meta: None,
         });
         let img = Compositor::new().render_image(canvas, &scene, 0);
         assert_eq!(img.get_pixel(0, 0).0, [0, 0, 0, 255]);
@@ -302,6 +303,7 @@ mod tests {
             visible: true,
             volume: 1.0,
             muted: false,
+            meta: None,
         }
     }
 

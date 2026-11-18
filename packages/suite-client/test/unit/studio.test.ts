@@ -89,6 +89,26 @@ describe("applyStudioEvent", () => {
     expect(applyStudioEvent(s, "SourceStarted", { source_id: "b", kind: "camera" })).toBe(s);
   });
 
+  it("entrées audio globales : création, réglages, suppression", () => {
+    let s = initial();
+    expect(s.audio_inputs).toBeUndefined();
+    const mic = { id: "m1", name: "Micro Anne", kind: "audio_input" as const, volume: 1, muted: false };
+    s = applyStudioEvent(s, "AudioInputCreated", { input: mic });
+    expect(s.audio_inputs).toEqual([mic]);
+    expect(applyStudioEvent(s, "AudioInputCreated", { input: mic })).toBe(s);
+    s = applyStudioEvent(s, "AudioInputMuteChanged", { input_id: "m1", muted: true });
+    expect(s.audio_inputs![0]!.muted).toBe(true);
+    expect(applyStudioEvent(s, "AudioInputMuteChanged", { input_id: "m1", muted: true })).toBe(s);
+    s = applyStudioEvent(s, "AudioInputVolumeChanged", { input_id: "m1", volume: 0.5 });
+    expect(s.audio_inputs![0]!.volume).toBe(0.5);
+    s = applyStudioEvent(s, "AudioInputUpdated", { input: { ...mic, name: "Micro plateau", device_id: "hw:2" } });
+    expect(s.audio_inputs![0]!.name).toBe("Micro plateau");
+    expect(applyStudioEvent(s, "AudioInputVolumeChanged", { input_id: "zz", volume: 1 })).toBe(s);
+    s = applyStudioEvent(s, "AudioInputRemoved", { input_id: "m1" });
+    expect(s.audio_inputs).toEqual([]);
+    expect(applyStudioEvent(s, "RecordingPaused", { output: "record", paused: true, duration_s: 1 })).toBe(s);
+  });
+
   it("ignore les événements inconnus et les scènes absentes", () => {
     const s = initial();
     expect(applyStudioEvent(s, "OutputStarted", { output: "record", target: "x" })).toBe(s);

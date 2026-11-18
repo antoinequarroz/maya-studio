@@ -184,3 +184,68 @@ fn engine_records_through_api() {
     assert_eq!(stopped["finalized"], true);
     check(&path);
 }
+
+/// Pause : ~1 s enregistrée, 1 s de pause, ~1 s enregistrée. Le fichier dure
+/// environ 2 s, sans trou, et la durée annoncée exclut la pause.
+#[test]
+fn engine_pauses_recording() {
+    use studio_core::{SourceKind, Studio, Transform};
+    use studiod::engine::{Engine, OutputConfig};
+
+    let canvas = Canvas {
+        width: W,
+        height: H,
+        fps: FPS,
+    };
+    let mut studio = Studio::new(canvas);
+    studio
+        .add_source(
+            "Scène 1",
+            "Mire",
+            SourceKind::TestPattern,
+            Some(Transform::full(canvas)),
+        )
+        .unwrap();
+    let config = OutputConfig {
+        encoder: EncoderChoice::Named(studiod::encoders::test_encoder().into()),
+        ..OutputConfig::default()
+    };
+    let engine = Engine::new(studio, std::env::temp_dir(), config);
+    engine.spawn_render_loop();
+    let call = |t: &str| studiod::api::handle(&engine, t, Value::Null);
+    let path = temp_path("pause.mkv");
+    studiod::api::handle(
+        &engine,
+        "StartRecording",
+        serde_json::json!({ "path": path }),
+    )
+    .expect("StartRecording");
+    assert_eq!(call("ResumeRecording").unwrap_err().0, "output_not_paused");
+    std::thread::sleep(Duration::from_millis(1000));
+    let paused = call("PauseRecording").expect("PauseRecording");
+    assert_eq!(paused["paused"], true);
+    assert_eq!(call("PauseRecording").unwrap_err().0, "output_paused");
+    let frames_at_pause = call("GetOutputStatus").unwrap()["record"]["frames"]
+        .as_u64()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(1000));
+    let status = call("GetOutputStatus").unwrap();
+    assert_eq!(status["record"]["paused"], true);
+    // Aucune image poussée pendant la pause.
+    assert_eq!(
+        status["record"]["frames"].as_u64().unwrap(),
+        frames_at_pause
+    );
+    assert!(status["record"]["bytes"].as_u64().is_some());
+    call("ResumeRecording").expect("ResumeRecording");
+    std::thread::sleep(Duration::from_millis(1000));
+    let stopped = call("StopRecording").unwrap();
+    assert_eq!(stopped["finalized"], true);
+    assert_eq!(stopped["paused"], false);
+    let duration = stopped["duration_s"].as_f64().unwrap();
+    assert!(
+        (1.8..=2.5).contains(&duration),
+        "durée annoncée : {duration} s"
+    );
+    check(&path);
+}
