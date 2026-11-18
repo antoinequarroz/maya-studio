@@ -113,15 +113,15 @@ h3 {
   gap: 12px;
 }
 .brand-mark {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: radial-gradient(circle, var(--program) 0 22%, transparent 23% 48%, var(--program) 49% 100%);
-  box-shadow: 0 0 10px rgb(239 59 63 / 0.35);
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: url("/brand-mark.png") center / cover no-repeat;
 }
 .brand.large .brand-mark {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
 }
 
 .topbar-center {
