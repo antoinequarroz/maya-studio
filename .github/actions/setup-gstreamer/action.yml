@@ -5,8 +5,10 @@ description: >
 
 inputs:
   windows-version:
-    description: Version des paquets MSVC officiels de GStreamer pour Windows.
-    default: "1.24.12"
+    description: >
+      Version des paquets MSVC officiels de GStreamer pour Windows, ou « latest » pour la
+      dernière version stable (mineure paire) publiée sur gstreamer.freedesktop.org.
+    default: "latest"
 
 runs:
   using: composite
@@ -22,14 +24,8 @@ runs:
         echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig" >> "$GITHUB_ENV"
         gst-launch-1.0 --version
 
-    - name: Cache des paquets MSI (Windows)
-      if: runner.os == 'Windows'
-      uses: actions/cache@v4
-      with:
-        path: ${{ runner.temp }}/gstreamer-msi
-        key: gstreamer-msi-msvc-x86_64-${{ inputs.windows-version }}
-
-    - name: GStreamer (Windows, MSI officiels)
+    - name: Version de GStreamer (Windows)
+      id: gstver
       if: runner.os == 'Windows'
       shell: pwsh
       env:
@@ -37,9 +33,38 @@ runs:
       run: |
         $ErrorActionPreference = "Stop"
         $ver = $env:GST_VERSION
+        if ($ver -eq "latest") {
+          $index = (Invoke-WebRequest -Uri "https://gstreamer.freedesktop.org/data/pkg/windows/" -UseBasicParsing).Content
+          $ver = [regex]::Matches($index, 'href="(1\.\d+\.\d+)/"') |
+            ForEach-Object { $_.Groups[1].Value } |
+            Where-Object { ([int]($_.Split(".")[1])) % 2 -eq 0 } |
+            Sort-Object { [version]$_ } | Select-Object -Last 1
+          if (-not $ver) { throw "aucune version trouvée dans l'index des paquets Windows" }
+        }
+        Write-Host "GStreamer $ver"
+        "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+    - name: Cache des paquets MSI (Windows)
+      if: runner.os == 'Windows'
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/gstreamer-msi
+        key: gstreamer-msi-msvc-x86_64-${{ steps.gstver.outputs.version }}
+
+    - name: GStreamer (Windows, MSI officiels)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        GST_VERSION: ${{ steps.gstver.outputs.version }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $ver = $env:GST_VERSION
         $dir = Join-Path $env:RUNNER_TEMP "gstreamer-msi"
         New-Item -ItemType Directory -Force -Path $dir | Out-Null
         $base = "https://gstreamer.freedesktop.org/data/pkg/windows/$ver/msvc"
+        $listing = (Invoke-WebRequest -Uri "$base/" -UseBasicParsing).Content
+        $files = [regex]::Matches($listing, 'href="([^"?/]+)"') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+        Write-Host "Paquets disponibles :"; $files | ForEach-Object { Write-Host "  $_" }
         foreach ($name in @("gstreamer-1.0-msvc-x86_64-$ver.msi", "gstreamer-1.0-devel-msvc-x86_64-$ver.msi")) {
           $msi = Join-Path $dir $name
           if (-not (Test-Path $msi)) {
