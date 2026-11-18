@@ -174,6 +174,16 @@ pub trait Output: Send {
     /// Pousse une image RGBA. Ne doit pas bloquer la boucle de rendu.
     /// Une erreur arrête la sortie.
     fn push_frame(&mut self, rgba: &[u8]) -> std::io::Result<()>;
+    /// La boucle de rendu a pris du retard et n'a pas produit `n` images : la
+    /// sortie avance son horloge d'autant, pour que la durée enregistrée reste celle
+    /// du temps réel (et que le son, calé sur la vidéo, ne soit pas jeté). `last` est
+    /// la dernière image rendue, pour les backends qui n'ont pas d'horodatage.
+    fn skip_frames(&mut self, n: u64, last: &[u8]) -> std::io::Result<()> {
+        for _ in 0..n {
+            self.push_frame(last)?;
+        }
+        Ok(())
+    }
     /// Entrée audio de la sortie, si le backend en a une.
     fn audio_sink(&self) -> Option<Arc<dyn AudioSink>>;
     /// Arrête proprement (finalise le fichier, ferme la connexion).
