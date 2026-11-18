@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::model::{Canvas, Scene, Source, SourceKind, Transform};
+use crate::model::{Canvas, Scene, Source, SourceKind, Transform, MAX_VOLUME};
 
 #[derive(Debug, Error, PartialEq)]
 pub enum StudioError {
@@ -21,6 +21,8 @@ pub enum StudioError {
     SceneOnAir,
     #[error("impossible de supprimer la dernière scène")]
     LastScene,
+    #[error("volume invalide : {0} (attendu entre 0 et 2)")]
+    InvalidVolume(f32),
 }
 
 /// Changement d'état, diffusé comme événement aux clients.
@@ -59,6 +61,16 @@ pub enum Change {
         scene_id: Uuid,
         source_ids: Vec<Uuid>,
     },
+    SourceVolumeChanged {
+        scene_id: Uuid,
+        source_id: Uuid,
+        volume: f32,
+    },
+    SourceMuteChanged {
+        scene_id: Uuid,
+        source_id: Uuid,
+        muted: bool,
+    },
 }
 
 /// Modification partielle d'une source : seuls les champs présents changent.
@@ -67,8 +79,21 @@ pub struct SourcePatch {
     pub name: Option<String>,
     pub visible: Option<bool>,
     pub transform: Option<Transform>,
+    /// Gain audio linéaire (0 à 2).
+    #[serde(default)]
+    pub volume: Option<f32>,
+    #[serde(default)]
+    pub muted: Option<bool>,
     #[serde(default, flatten)]
     pub kind: Option<SourceKind>,
+}
+
+fn check_volume(volume: f32) -> Result<(), StudioError> {
+    if volume.is_finite() && (0.0..=MAX_VOLUME).contains(&volume) {
+        Ok(())
+    } else {
+        Err(StudioError::InvalidVolume(volume))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +225,8 @@ impl Studio {
             kind,
             transform: transform.unwrap_or_else(|| Transform::full(canvas)),
             visible: true,
+            volume: 1.0,
+            muted: false,
         };
         self.scenes[idx].sources.push(source.clone());
         Ok(Change::SourceAdded {
@@ -236,10 +263,19 @@ impl Studio {
         source_key: &str,
         patch: SourcePatch,
     ) -> Result<Change, StudioError> {
+        if let Some(v) = patch.volume {
+            check_volume(v)?;
+        }
         let si = self.scene_index(scene_key)?;
         let idx = self.source_index(si, source_key)?;
         let scene_id = self.scenes[si].id;
         let source = &mut self.scenes[si].sources[idx];
+        if let Some(v) = patch.volume {
+            source.volume = v;
+        }
+        if let Some(m) = patch.muted {
+            source.muted = m;
+        }
         if let Some(name) = patch.name {
             source.name = name;
         }
@@ -256,6 +292,53 @@ impl Studio {
             scene_id,
             source: source.clone(),
         })
+    }
+
+    /// Règle le gain audio d'une source (linéaire, 0 à 2).
+    pub fn set_source_volume(
+        &mut self,
+        scene_key: &str,
+        source_key: &str,
+        volume: f32,
+    ) -> Result<Change, StudioError> {
+        check_volume(volume)?;
+        let si = self.scene_index(scene_key)?;
+        let idx = self.source_index(si, source_key)?;
+        let scene_id = self.scenes[si].id;
+        let source = &mut self.scenes[si].sources[idx];
+        source.volume = volume;
+        Ok(Change::SourceVolumeChanged {
+            scene_id,
+            source_id: source.id,
+            volume,
+        })
+    }
+
+    /// Coupe ou rétablit le son d'une source.
+    pub fn set_source_muted(
+        &mut self,
+        scene_key: &str,
+        source_key: &str,
+        muted: bool,
+    ) -> Result<Change, StudioError> {
+        let si = self.scene_index(scene_key)?;
+        let idx = self.source_index(si, source_key)?;
+        let scene_id = self.scenes[si].id;
+        let source = &mut self.scenes[si].sources[idx];
+        source.muted = muted;
+        Ok(Change::SourceMuteChanged {
+            scene_id,
+            source_id: source.id,
+            muted,
+        })
+    }
+
+    /// Toutes les sources de capture, toutes scènes confondues.
+    pub fn capture_sources(&self) -> impl Iterator<Item = &Source> {
+        self.scenes
+            .iter()
+            .flat_map(|s| s.sources.iter())
+            .filter(|s| s.kind.is_capture())
     }
 
     /// Déplace une source dans la pile (0 = tout en dessous).
@@ -338,5 +421,78 @@ mod tests {
         assert_eq!(s.program().sources[0].name, "Mire");
         s.remove_source("Scène 1", "Fond").unwrap();
         assert_eq!(s.program().sources.len(), 1);
+    }
+
+    #[test]
+    fn volume_and_mute() {
+        let mut s = Studio::default();
+        s.add_source(
+            "Scène 1",
+            "Micro",
+            SourceKind::AudioInput { device_id: None },
+            None,
+        )
+        .unwrap();
+        assert_eq!(s.program().sources[0].volume, 1.0);
+        assert!(!s.program().sources[0].muted);
+        s.set_source_volume("Scène 1", "Micro", 1.5).unwrap();
+        s.set_source_muted("Scène 1", "Micro", true).unwrap();
+        assert_eq!(s.program().sources[0].volume, 1.5);
+        assert!(s.program().sources[0].muted);
+        assert!(matches!(
+            s.set_source_volume("Scène 1", "Micro", 2.5),
+            Err(StudioError::InvalidVolume(_))
+        ));
+        assert!(s.set_source_volume("Scène 1", "Micro", f32::NAN).is_err());
+        assert!(s.set_source_volume("Scène 1", "Micro", -0.1).is_err());
+        assert_eq!(s.capture_sources().count(), 1);
+    }
+
+    #[test]
+    fn new_kinds_serde() {
+        use serde_json::json;
+        let src: Source = serde_json::from_value(json!({
+            "id": Uuid::nil(), "name": "Clip", "kind": "media_file",
+            "path": "a.mp4", "loop": true,
+            "transform": {"x": 0, "y": 0, "width": 10, "height": 10},
+            "visible": true
+        }))
+        .unwrap();
+        assert_eq!(
+            src.kind,
+            SourceKind::MediaFile {
+                path: "a.mp4".into(),
+                looping: true
+            }
+        );
+        // Anciennes sources sans volume ni mute : valeurs par défaut.
+        assert_eq!(src.volume, 1.0);
+        assert!(!src.muted);
+        let v = serde_json::to_value(&src).unwrap();
+        assert_eq!(v["loop"], true);
+        assert_eq!(v["kind"], "media_file");
+        let cam: SourceKind = serde_json::from_value(json!({"kind": "camera"})).unwrap();
+        assert_eq!(
+            cam,
+            SourceKind::Camera {
+                device_id: None,
+                width: None,
+                height: None,
+                fps: None
+            }
+        );
+        let cam: SourceKind =
+            serde_json::from_value(json!({"kind": "camera", "device_id": "x", "fps": 60})).unwrap();
+        assert!(matches!(cam, SourceKind::Camera { fps: Some(60), .. }));
+        for k in [
+            json!({"kind": "display_capture", "display_id": "0"}),
+            json!({"kind": "window_capture"}),
+            json!({"kind": "audio_input"}),
+            json!({"kind": "srt_input", "url": "srt://h:1"}),
+            json!({"kind": "test_pattern"}),
+        ] {
+            let kind: SourceKind = serde_json::from_value(k.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&kind).unwrap(), k);
+        }
     }
 }

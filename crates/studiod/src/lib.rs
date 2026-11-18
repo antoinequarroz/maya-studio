@@ -4,7 +4,13 @@
 
 pub mod api;
 #[cfg(feature = "gstreamer")]
+pub mod captures;
+#[cfg(feature = "gstreamer")]
+pub mod devices;
+#[cfg(feature = "gstreamer")]
 pub mod encoders;
 pub mod engine;
+pub mod media;
+pub mod mixer;
 pub mod outputs;
 pub mod server;

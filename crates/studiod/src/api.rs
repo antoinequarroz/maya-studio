@@ -94,6 +94,18 @@ pub enum Request {
     StopStream,
     GetOutputStatus,
     GetEncoders,
+    GetInputDevices,
+    SetSourceVolume {
+        scene: String,
+        source: String,
+        /// Gain linéaire de 0 à 2 (1 = inchangé).
+        volume: f32,
+    },
+    SetSourceMuted {
+        scene: String,
+        source: String,
+        muted: bool,
+    },
 }
 
 pub const CAPABILITIES: &[&str] = &[
@@ -103,6 +115,8 @@ pub const CAPABILITIES: &[&str] = &[
     "studio.outputs",
     "studio.encoders",
     "studio.preview",
+    "studio.inputs",
+    "studio.audio",
 ];
 
 pub const REQUESTS: &[&str] = &[
@@ -130,6 +144,9 @@ pub const REQUESTS: &[&str] = &[
     "StopStream",
     "GetOutputStatus",
     "GetEncoders",
+    "GetInputDevices",
+    "SetSourceVolume",
+    "SetSourceMuted",
 ];
 
 /// Erreur renvoyée au client : (code, message).
@@ -142,6 +159,7 @@ fn studio_err(e: StudioError) -> ApiError {
         StudioError::SceneNameTaken(_) => "scene_name_taken",
         StudioError::SceneOnAir => "scene_on_air",
         StudioError::LastScene => "last_scene",
+        StudioError::InvalidVolume(_) => "invalid_volume",
     };
     (code.to_string(), e.to_string())
 }
@@ -196,6 +214,10 @@ pub fn handle(engine: &Engine, request_type: &str, data: Value) -> Result<Value,
 fn apply(engine: &Engine, changes: Vec<Change>) -> Value {
     for c in &changes {
         engine.emit_change(c);
+    }
+    // Sources ajoutées, retirées ou modifiées : les captures suivent.
+    if !changes.is_empty() {
+        engine.sync_captures();
     }
     match changes.as_slice() {
         [one] => serde_json::to_value(one).unwrap()["data"].clone(),
@@ -323,6 +345,17 @@ fn execute(engine: &Engine, req: Request) -> Result<Value, ApiError> {
         StopStream => return engine.stop_output(OutputKind::Stream).map_err(output_err),
         GetOutputStatus => return Ok(engine.output_status()),
         GetEncoders => return Ok(engine.encoders()),
+        GetInputDevices => return Ok(engine.input_devices()),
+        SetSourceVolume {
+            scene,
+            source,
+            volume,
+        } => studio().set_source_volume(&scene, &source, volume),
+        SetSourceMuted {
+            scene,
+            source,
+            muted,
+        } => studio().set_source_muted(&scene, &source, muted),
     };
     change.map(|c| apply(engine, vec![c])).map_err(studio_err)
 }
@@ -420,6 +453,62 @@ mod tests {
             assert_eq!(x264["selected"], false);
             assert_eq!(x264["gpl"], true);
         }
+    }
+
+    #[test]
+    fn input_devices_never_fail() {
+        assert!(CAPABILITIES.contains(&"studio.inputs"));
+        assert!(CAPABILITIES.contains(&"studio.audio"));
+        let v = handle(&engine(), "GetInputDevices", Value::Null).unwrap();
+        // Le conteneur de test n'a ni caméra ni micro : des listes, éventuellement vides.
+        assert!(v["video"].is_array());
+        assert!(v["audio"].is_array());
+    }
+
+    #[test]
+    fn volume_and_mute_requests() {
+        let e = engine();
+        handle(
+            &e,
+            "AddSource",
+            json!({ "scene": "Scène 1", "name": "Micro", "kind": "audio_input" }),
+        )
+        .unwrap();
+        let v = handle(
+            &e,
+            "SetSourceVolume",
+            json!({ "scene": "Scène 1", "source": "Micro", "volume": 0.5 }),
+        )
+        .unwrap();
+        assert_eq!(v["volume"], 0.5);
+        let v = handle(
+            &e,
+            "SetSourceMuted",
+            json!({ "scene": "Scène 1", "source": "Micro", "muted": true }),
+        )
+        .unwrap();
+        assert_eq!(v["muted"], true);
+        let err = handle(
+            &e,
+            "SetSourceVolume",
+            json!({ "scene": "Scène 1", "source": "Micro", "volume": 3 }),
+        )
+        .unwrap_err();
+        assert_eq!(err.0, "invalid_volume");
+        let scene = handle(&e, "GetScene", json!({ "scene": "Scène 1" })).unwrap();
+        assert_eq!(scene["sources"][0]["volume"], 0.5);
+        assert_eq!(scene["sources"][0]["muted"], true);
+        // La capture suit la source : présente après l'ajout, arrêtée après le retrait.
+        if cfg!(feature = "gstreamer") {
+            assert_eq!(e.running_captures().len(), 1);
+        }
+        handle(
+            &e,
+            "RemoveSource",
+            json!({ "scene": "Scène 1", "source": "Micro" }),
+        )
+        .unwrap();
+        assert!(e.running_captures().is_empty());
     }
 
     #[test]
