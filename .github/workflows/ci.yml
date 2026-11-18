@@ -1,0 +1,87 @@
+name: CI
+
+# Compile et teste le moteur (Rust + GStreamer) et l'interface (TypeScript) sur macOS et Windows.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Windows
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-gstreamer
+
+      - name: Encodeurs H.264 / AAC disponibles
+        shell: bash
+        run: |
+          for e in openh264enc vtenc_h264 vtenc_h264_hw mfh264enc nvh264enc qsvh264enc amfh264enc avenc_aac voaacenc fdkaacenc; do
+            if gst-inspect-1.0 --exists "$e" 2>/dev/null; then echo "✓ $e"; else echo "· $e"; fi
+          done
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/desktop/src-tauri
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # --- Moteur -----------------------------------------------------------------
+      - name: Compiler le moteur
+        run: cargo build --workspace --locked
+
+      - name: Tests du moteur
+        run: cargo test --workspace --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # --- Interface ---------------------------------------------------------------
+      - name: Dépendances npm
+        run: npm ci
+
+      - name: Types TypeScript
+        run: npm run typecheck
+
+      # Le test d'intégration du client lance le vrai studiod compilé plus haut.
+      - name: Tests de l'interface et du client
+        run: npm test
+
+      # --- Coquille desktop Tauri -------------------------------------------------
+      - name: Moteur en sidecar + front-end
+        working-directory: apps/desktop
+        run: |
+          npm run sidecar
+          npm run build
+
+      - name: Compiler la coquille Tauri
+        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
