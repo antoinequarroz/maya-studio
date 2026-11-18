@@ -60,7 +60,7 @@ jobs:
         run: cargo build --workspace --locked
 
       - name: Tests du moteur
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
